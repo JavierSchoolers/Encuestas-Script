@@ -630,18 +630,19 @@ def monday_query(query, variables=None, retries=4):
             if "errors" in data:
                 raise ValueError(f"Monday API error: {data['errors']}")
             return data.get("data", {})
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            if attempt < retries - 1:
-                wait = (attempt + 1) * 15
-                print(f"  ⚠️  Red ({type(e).__name__}), reintentando en {wait}s... ({attempt+1}/{retries})")
-                time.sleep(wait)
-            else:
-                raise
         except requests.exceptions.HTTPError as e:
             sc = getattr(e.response, "status_code", None)
             if sc in (429, 500, 502, 503, 504) and attempt < retries - 1:
                 wait = (attempt + 1) * 15
                 print(f"  ⚠️  HTTP {sc}, reintentando en {wait}s... ({attempt+1}/{retries})")
+                time.sleep(wait)
+            else:
+                raise
+        except requests.exceptions.RequestException as e:
+            # Timeout, ConnectionError, ChunkedEncodingError, ProtocolError… → transitorios
+            if attempt < retries - 1:
+                wait = (attempt + 1) * 15
+                print(f"  ⚠️  Red ({type(e).__name__}), reintentando en {wait}s... ({attempt+1}/{retries})")
                 time.sleep(wait)
             else:
                 raise

@@ -89,7 +89,8 @@ def monday_query(query, variables=None, retries=3):
                 print(f"  ❌ HTTP error: {e}")
                 raise
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError,
-                requests.exceptions.ReadTimeout, requests.exceptions.Timeout) as e:
+                requests.exceptions.ReadTimeout, requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError) as e:
             if attempt < retries - 1:
                 wait = (attempt + 1) * 8
                 print(f"  ⚠️  Error de conexión, reintentando en {wait}s... ({attempt+1}/{retries})")
