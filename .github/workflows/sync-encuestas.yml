@@ -1,15 +1,22 @@
 # .github/workflows/sync-encuestas.yml
-# Sincroniza EvolCampus → Monday todos los días y refresca el dashboard.
-# Ejecuta:  evolcampus_monday_sync.py --sync   (que a su vez lanza
-#           link_encuestas_alumnos.py al terminar).
+# Sincroniza EvolCampus → Monday todos los días (objetivo: 00:30 hora de España).
+# Ejecuta DOS syncs (cada uno a su board) + enlace de empresa/alumno + refresco
+# del dashboard:
+#   1) evolcampus_monday_sync_cursos.py --sync  → board Cursos  (5094417029)
+#   2) evolcampus_monday_sync.py        --sync  → board EGH     (5093144633)
+#      (este, al terminar, lanza link_encuestas_alumnos.py que enlaza AMBOS boards;
+#       por eso CURSOS va primero: así sus ítems ya existen cuando corre el enlace).
+#   3) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
 
 name: Sync encuestas EvolCampus → Monday
 
 on:
   schedule:
-    # GitHub usa horario UTC. '0 0 * * *' = 00:00 UTC TODOS los días (L-D).
-    # En España: 01:00 en invierno (CET) / 02:00 en verano (CEST).
-    - cron: '0 0 * * *'
+    # GitHub usa horario UTC y NO ajusta el horario de verano (DST).
+    # Objetivo: 00:30 en España, TODOS los días (L–D).
+    #   '30 22 * * *' = 22:30 UTC = 00:30 en verano (CEST) / 23:30 en invierno (CET).
+    # (Si prefieres 00:30 exacto en INVIERNO usa '30 23 * * *' → en verano sería 01:30.)
+    - cron: '30 22 * * *'
   workflow_dispatch: {}    # botón para lanzarlo a mano desde la pestaña "Actions"
 
 jobs:
@@ -29,13 +36,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ejecutar sync
+      # Credenciales SIEMPRE desde Secrets (Settings → Secrets and variables → Actions).
+      # Los .py abortan con error claro si falta alguna.
+      - name: 1) Sync CURSOS (no-EGH) → board 5094417029
+        env:
+          MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
+          EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
+          EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
+          SKIP_DASHBOARD_REGEN: '1'   # en CI el JSON lo reconstruye Netlify (paso 3)
+        run: python scripts/evolcampus_monday_sync_cursos.py --sync
+
+      - name: 2) Sync EGH → board 5093144633 (+ enlace empresa/alumno en AMBOS boards)
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: python scripts/evolcampus_monday_sync.py --sync
 
-      - name: Refrescar el dashboard (reconstruir encuestas en Netlify)
+      - name: 3) Refrescar el dashboard (reconstruir encuestas en Netlify)
+        if: always()   # refresca aunque algún sync haya fallado: sube lo que sí se escribió
         run: |
           curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
