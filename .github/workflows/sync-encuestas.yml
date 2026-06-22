@@ -1,12 +1,13 @@
 # .github/workflows/sync-encuestas.yml
 # Sincroniza EvolCampus → Monday todos los días (objetivo: 00:30 hora de España).
-# Ejecuta DOS syncs (cada uno a su board) + enlace de empresa/alumno + refresco
-# del dashboard:
+# Ejecuta DOS syncs (cada uno a su board) + asignación de empresa + refresco:
 #   1) evolcampus_monday_sync_cursos.py --sync  → board Cursos  (5094417029)
 #   2) evolcampus_monday_sync.py        --sync  → board EGH     (5093144633)
 #      (este, al terminar, lanza link_encuestas_alumnos.py que enlaza AMBOS boards;
 #       por eso CURSOS va primero: así sus ítems ya existen cuando corre el enlace).
-#   3) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
+#   3) link_marca_matriculas.py  → "Empresa - dashboard" con la Marca real (Matrículas).
+#   4) sync_mirror_empresa.py    → copia la empresa del board Alumnos a "Cuenta empresa".
+#   5) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
 
 name: Sync encuestas EvolCampus → Monday
 
@@ -53,7 +54,17 @@ jobs:
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: python scripts/evolcampus_monday_sync.py --sync
 
-      - name: 3) Refrescar el dashboard (reconstruir encuestas en Netlify)
-        if: always()   # refresca aunque algún sync haya fallado: sube lo que sí se escribió
+      - name: 3) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+        run: python scripts/link_marca_matriculas.py
+
+      - name: 4) Sincronizar 'Cuenta empresa' (espejo Alumnos → columna de texto)
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+        run: python scripts/sync_mirror_empresa.py
+
+      - name: 5) Refrescar el dashboard (reconstruir encuestas en Netlify)
+        if: always()   # refresca aunque algún paso haya fallado: sube lo que sí se escribió
         run: |
           curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
