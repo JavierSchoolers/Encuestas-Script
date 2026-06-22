@@ -38,3 +38,10 @@ jobs:
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: python scripts/evolcampus_monday_sync.py --sync
+
+      - name: Refrescar el dashboard (reconstruir encuestas en Netlify)
+        # Tras el sync, dispara la reconstrucción del JSON de encuestas que lee
+        # el dashboard, para no esperar a la build automática de cada 4 h.
+        # El "|| true" evita que el workflow falle si esta llamada no responde.
+        run: |
+          curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
