@@ -5,8 +5,8 @@ de EvolCampus a Monday, en los **dos** boards que lee el dashboard.
 
 ## Qué hace
 
-El workflow `.github/workflows/sync-encuestas.yml` ejecuta, cada día laborable
-(y a mano con "Run workflow"):
+El workflow `.github/workflows/sync-encuestas.yml` ejecuta, todos los días a las
+00:30 hora de España (y a mano con "Run workflow"):
 
 1. **`evolcampus_monday_sync_cursos.py --sync`** → board **Cursos `5094417029`**
    (todos los cursos NO-EGH: Housekeeping, Ofimática, etc.).
@@ -15,7 +15,11 @@ El workflow `.github/workflows/sync-encuestas.yml` ejecuta, cada día laborable
    Al terminar lanza `link_encuestas_alumnos.py`, que enlaza "empresa" y
    "alumno" por DNI en **ambos** boards (por eso Cursos va primero: así sus
    ítems ya existen cuando corre el enlace).
-3. **POST** a Netlify para reconstruir el JSON de encuestas del dashboard
+3. **`link_marca_matriculas.py`** → rellena "Empresa - dashboard" en ambos boards
+   con la Marca real del alumno (cadena Matrículas FUNDAE → Sociedades → Cuentas).
+4. **`sync_mirror_empresa.py`** → copia la empresa del board Alumnos (vía la
+   relación que dejó el paso 2) a la columna de texto "Cuenta empresa".
+5. **POST** a Netlify para reconstruir el JSON de encuestas del dashboard
    (`monday-encuestas-build-background`), que lee ambos boards y los combina.
 
 > Antes solo se ejecutaba el script EGH, así que el board de Cursos quedaba
@@ -44,8 +48,12 @@ scripts/
   evolcampus_monday_sync.py        (EGH;  --sync lanza link_encuestas_alumnos.py)
   evolcampus_monday_sync_cursos.py (NO-EGH; en CI salta monday_to_dashboard.py)
   link_encuestas_alumnos.py        (enlaza empresa/alumno por DNI en ambos boards)
+  link_marca_matriculas.py         (empresa por Marca real desde Matrículas FUNDAE)
+  sync_mirror_empresa.py           (espejo empresa Alumnos → texto "Cuenta empresa")
   monday_config.json               (board EGH 5093144633 + col_ids)
   monday_config_cursos.json        (board Cursos 5094417029 + col_ids)
+tools/
+  gen_egh_parte_map.py             (regenera el mapa tema→Parte EGH desde el Excel)
 ```
 
 ## Cambiar la hora
