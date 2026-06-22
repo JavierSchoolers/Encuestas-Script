@@ -19,6 +19,7 @@ import requests
 import json
 import sys
 import os
+import time
 import subprocess
 import argparse
 import re
@@ -494,7 +495,7 @@ def process_group_data(raw_data, group_name, course_name):
 # MONDAY.COM API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def monday_query(query, variables=None):
+def monday_query(query, variables=None, retries=4):
     headers = {
         "Authorization": MONDAY_TOKEN,
         "Content-Type":  "application/json",
@@ -503,12 +504,31 @@ def monday_query(query, variables=None):
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    resp = requests.post(MONDAY_API, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if "errors" in data:
-        raise ValueError(f"Monday API error: {data['errors']}")
-    return data.get("data", {})
+    # Reintentos ante timeouts / errores transitorios de red o servidor (429/5xx).
+    # El board Cursos tiene ~18k ítems y la precarga a veces excede el timeout.
+    for attempt in range(retries):
+        try:
+            resp = requests.post(MONDAY_API, headers=headers, json=payload, timeout=90)
+            resp.raise_for_status()
+            data = resp.json()
+            if "errors" in data:
+                raise ValueError(f"Monday API error: {data['errors']}")
+            return data.get("data", {})
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < retries - 1:
+                wait = (attempt + 1) * 15
+                print(f"  ⚠️  Red ({type(e).__name__}), reintentando en {wait}s... ({attempt+1}/{retries})")
+                time.sleep(wait)
+            else:
+                raise
+        except requests.exceptions.HTTPError as e:
+            sc = getattr(e.response, "status_code", None)
+            if sc in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                wait = (attempt + 1) * 15
+                print(f"  ⚠️  HTTP {sc}, reintentando en {wait}s... ({attempt+1}/{retries})")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def monday_setup_board():
