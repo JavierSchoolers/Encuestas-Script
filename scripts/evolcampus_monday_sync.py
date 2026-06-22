@@ -29,21 +29,25 @@ from datetime import datetime
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Credenciales: se leen de variables de entorno (GitHub Secrets / entorno local).
-# Ya NO van escritas en el código.
+# Credenciales: SIEMPRE desde variables de entorno / GitHub Secrets (nunca en código).
 EVOLCAMPUS_CLIENT_ID = os.environ.get("EVOLCAMPUS_CLIENT_ID", "")
 EVOLCAMPUS_KEY       = os.environ.get("EVOLCAMPUS_KEY", "")
 EVOLCAMPUS_API       = "https://api.evolcampus.com/api/v1"
 
 MONDAY_TOKEN         = os.environ.get("MONDAY_TOKEN", "")
 MONDAY_API           = "https://api.monday.com/v2"
-MONDAY_BOARD_NAME    = "Encuestas: Prueba"
 
-# Aviso temprano si falta alguna credencial (evita fallos crípticos más tarde).
-if not (MONDAY_TOKEN and EVOLCAMPUS_KEY and EVOLCAMPUS_CLIENT_ID):
-    sys.exit("ERROR: faltan credenciales. Define las variables de entorno "
-             "MONDAY_TOKEN, EVOLCAMPUS_KEY y EVOLCAMPUS_CLIENT_ID "
-             "(en GitHub: Settings -> Secrets and variables -> Actions).")
+# Aviso temprano si faltan credenciales (evita escrituras silenciosas con token vacío).
+if not MONDAY_TOKEN or not EVOLCAMPUS_KEY or not EVOLCAMPUS_CLIENT_ID:
+    import sys as _sys
+    _faltan = [n for n, v in (("MONDAY_TOKEN", MONDAY_TOKEN),
+                              ("EVOLCAMPUS_KEY", EVOLCAMPUS_KEY),
+                              ("EVOLCAMPUS_CLIENT_ID", EVOLCAMPUS_CLIENT_ID)) if not v]
+    print(f"✗ Faltan variables de entorno: {', '.join(_faltan)}. "
+          f"Configúralas como Secrets del repo (Settings → Secrets and variables → Actions).",
+          file=_sys.stderr)
+    _sys.exit(2)
+MONDAY_BOARD_NAME    = "Encuestas: Prueba"
 
 # Palabras clave para detectar categoría de pregunta
 FORMADOR_KW  = ["formador", "ponente", "docente", "profesor", "tutor", "trainer"]

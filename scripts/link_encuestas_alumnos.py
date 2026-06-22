@@ -16,22 +16,24 @@ Uso:
 ─────────────────────────────────────────────────────────────────────────────
 """
 
+import os
 import requests
 import json
 import sys
 import time
 import argparse
-import os
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Credencial leída de variable de entorno (GitHub Secret / entorno local).
+# Credencial desde variable de entorno / GitHub Secret (nunca en código).
 MONDAY_TOKEN = os.environ.get("MONDAY_TOKEN", "")
 MONDAY_API   = "https://api.monday.com/v2"
+
 if not MONDAY_TOKEN:
-    sys.exit("ERROR: falta la variable de entorno MONDAY_TOKEN.")
+    print("✗ Falta la variable de entorno MONDAY_TOKEN.", file=sys.stderr)
+    sys.exit(2)
 
 # Board IDs
 ALUMNOS_BOARD    = 1388079440
