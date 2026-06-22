@@ -1,0 +1,40 @@
+# .github/workflows/sync-encuestas.yml
+# Sincroniza EvolCampus → Monday cada día laborable (replica el launchd del Mac).
+# Ejecuta:  evolcampus_monday_sync.py --sync   (que a su vez lanza
+#           link_encuestas_alumnos.py al terminar).
+
+name: Sync encuestas EvolCampus → Monday
+
+on:
+  schedule:
+    # GitHub usa horario UTC. '0 7 * * 1-5' = 07:00 UTC, lunes a viernes.
+    # En España: 09:00 en verano (CEST) / 08:00 en invierno (CET).
+    # Si lo quieres TODOS los días, usa  '0 7 * * *'.
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch: {}    # botón para lanzarlo a mano desde la pestaña "Actions"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar sync
+        # Las credenciales se leen de los Secrets del repo (Settings → Secrets
+        # and variables → Actions). Los .py ya las leen de estas variables.
+        env:
+          MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
+          EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
+          EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
+        run: python scripts/evolcampus_monday_sync.py --sync
