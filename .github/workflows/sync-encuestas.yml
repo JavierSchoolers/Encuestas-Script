@@ -1,5 +1,5 @@
 # .github/workflows/sync-encuestas.yml
-# Sincroniza EvolCampus → Monday cada día laborable (replica el launchd del Mac).
+# Sincroniza EvolCampus → Monday todos los días y refresca el dashboard.
 # Ejecuta:  evolcampus_monday_sync.py --sync   (que a su vez lanza
 #           link_encuestas_alumnos.py al terminar).
 
@@ -7,10 +7,9 @@ name: Sync encuestas EvolCampus → Monday
 
 on:
   schedule:
-    # GitHub usa horario UTC. '0 7 * * 1-5' = 07:00 UTC, lunes a viernes.
-    # En España: 09:00 en verano (CEST) / 08:00 en invierno (CET).
-    # Si lo quieres TODOS los días, usa  '0 7 * * *'.
-    - cron: '0 7 * * 1-5'
+    # GitHub usa horario UTC. '0 0 * * *' = 00:00 UTC TODOS los días (L-D).
+    # En España: 01:00 en invierno (CET) / 02:00 en verano (CEST).
+    - cron: '0 0 * * *'
   workflow_dispatch: {}    # botón para lanzarlo a mano desde la pestaña "Actions"
 
 jobs:
@@ -31,8 +30,6 @@ jobs:
           pip install -r requirements.txt
 
       - name: Ejecutar sync
-        # Las credenciales se leen de los Secrets del repo (Settings → Secrets
-        # and variables → Actions). Los .py ya las leen de estas variables.
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
@@ -40,8 +37,5 @@ jobs:
         run: python scripts/evolcampus_monday_sync.py --sync
 
       - name: Refrescar el dashboard (reconstruir encuestas en Netlify)
-        # Tras el sync, dispara la reconstrucción del JSON de encuestas que lee
-        # el dashboard, para no esperar a la build automática de cada 4 h.
-        # El "|| true" evita que el workflow falle si esta llamada no responde.
         run: |
           curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
