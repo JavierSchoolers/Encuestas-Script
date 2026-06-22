@@ -3,11 +3,13 @@
 # Ejecuta DOS syncs (cada uno a su board) + asignación de empresa + refresco:
 #   1) evolcampus_monday_sync_cursos.py --sync  → board Cursos  (5094417029)
 #   2) evolcampus_monday_sync.py        --sync  → board EGH     (5093144633)
-#      (este, al terminar, lanza link_encuestas_alumnos.py que enlaza AMBOS boards;
-#       por eso CURSOS va primero: así sus ítems ya existen cuando corre el enlace).
-#   3) link_marca_matriculas.py  → "Empresa - dashboard" con la Marca real (Matrículas).
-#   4) sync_mirror_empresa.py    → copia la empresa del board Alumnos a "Cuenta empresa".
-#   5) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
+#      (su sync interno lanza link_encuestas_alumnos SOLO con --board egh).
+#   3) link_encuestas_alumnos.py --board cursos → "Alumno (rel)" + "Empresa -
+#      dashboard" en el board Cursos (el paso 2 no lo hace). "Cuenta empresa" es un
+#      mirror de esa relación → se rellena solo en cuanto la relación existe.
+#   4) link_marca_matriculas.py  → "Empresa - dashboard" con la Marca real (Matrículas).
+#   5) sync_mirror_empresa.py    → copia la empresa del board Alumnos a "Cuenta empresa".
+#   6) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
 
 name: Sync encuestas EvolCampus → Monday
 
@@ -47,24 +49,33 @@ jobs:
           SKIP_DASHBOARD_REGEN: '1'   # en CI el JSON lo reconstruye Netlify (paso 3)
         run: python scripts/evolcampus_monday_sync_cursos.py --sync
 
-      - name: 2) Sync EGH → board 5093144633 (+ enlace empresa/alumno en AMBOS boards)
+      - name: 2) Sync EGH → board 5093144633 (su sync interno enlaza SOLO el board EGH)
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: python scripts/evolcampus_monday_sync.py --sync
 
-      - name: 3) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
+      # El sync EGH (paso 2) lanza link_encuestas_alumnos SOLO con --board egh, así que
+      # el board CURSOS nunca recibe "Alumno (rel)" ni "Empresa - dashboard". Lo hacemos
+      # aquí explícitamente. Sin esto, "Alumno (rel)" y el mirror "Cuenta empresa" quedan
+      # vacíos en Cursos y el paso 5 (sync_mirror) no encuentra relaciones que copiar.
+      - name: 3) Enlazar Alumno (rel) + Empresa en board CURSOS (DNI → Alumnos)
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+        run: python scripts/link_encuestas_alumnos.py --board cursos
+
+      - name: 4) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_marca_matriculas.py
 
-      - name: 4) Sincronizar 'Cuenta empresa' (espejo Alumnos → columna de texto)
+      - name: 5) Sincronizar 'Cuenta empresa' (espejo Alumnos → columna de texto)
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/sync_mirror_empresa.py
 
-      - name: 5) Refrescar el dashboard (reconstruir encuestas en Netlify)
+      - name: 6) Refrescar el dashboard (reconstruir encuestas en Netlify)
         if: always()   # refresca aunque algún paso haya fallado: sube lo que sí se escribió
         run: |
           curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
