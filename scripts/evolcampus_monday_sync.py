@@ -1076,8 +1076,9 @@ def mode_setup():
     print("  Ahora puedes ejecutar: python3 evolcampus_monday_sync.py --sync")
 
 
-def mode_sync(dry_run=False, filter_course=None):
-    """Sincroniza todos los grupos activos con Monday."""
+def mode_sync(dry_run=False, filter_course=None, force=False):
+    """Sincroniza todos los grupos activos con Monday.
+    force=True ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos."""
     print(f"\n── SYNC {'[DRY-RUN] ' if dry_run else ''}──────────────────────────────────────")
 
     config = load_monday_config()
@@ -1145,7 +1146,7 @@ def mode_sync(dry_run=False, filter_course=None):
             item_name_prog = f"{course_clean} — {group_name}"
             evol_fecha  = program_row.get("fecha_ultima", "")
             monday_fecha = program_dates.get(item_name_prog, "")
-            if evol_fecha and monday_fecha and evol_fecha == monday_fecha and not dry_run:
+            if evol_fecha and monday_fecha and evol_fecha == monday_fecha and not dry_run and not force:
                 print(f"  ⏭ Sin cambios desde {evol_fecha}, omitiendo")
                 continue
 
@@ -1244,6 +1245,7 @@ if __name__ == "__main__":
     parser.add_argument("--sync",         action="store_true", help="Sincronizar datos")
     parser.add_argument("--dry-run",      action="store_true", help="Simular sync sin escribir en Monday")
     parser.add_argument("--filter-course",metavar="TEXTO",     help="Sincronizar solo grupos cuyo curso contenga este texto (ej: 'EGH')")
+    parser.add_argument("--force", action="store_true", help="Ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos (backfill).")
     args = parser.parse_args()
 
     if not any([args.explore, args.setup, args.sync, args.test_local]):
@@ -1257,4 +1259,4 @@ if __name__ == "__main__":
     if args.setup:
         mode_setup()
     if args.sync:
-        mode_sync(dry_run=args.dry_run, filter_course=args.filter_course)
+        mode_sync(dry_run=args.dry_run, filter_course=args.filter_course, force=args.force)

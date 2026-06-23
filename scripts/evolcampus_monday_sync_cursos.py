@@ -884,11 +884,13 @@ def mode_explore():
         break
 
 
-def mode_sync(dry_run=False, year=None, filter_course=None):
+def mode_sync(dry_run=False, year=None, filter_course=None, force=False):
     """Sincroniza cursos con Monday.
     Si year está definido, sincroniza todos los grupos de ese año (activos o no).
     Si no, solo sincroniza los grupos activos hoy.
     Si filter_course está definido, solo sincroniza grupos cuyo curso contenga ese texto.
+    Si force=True, ignora el salto por fecha "sin cambios" y reprocesa todos los grupos
+    (backfill: recoge respuestas tardías que no movieron la fecha máxima del programa).
     """
     year_label = f" año {year}" if year else " (grupos activos)"
     filter_label = f" · filtro: '{filter_course}'" if filter_course else ""
@@ -970,7 +972,7 @@ def mode_sync(dry_run=False, year=None, filter_course=None):
             evol_dt      = program_row.get("fecha_ultima_dt", "") or program_row.get("fecha_ultima", "")
             monday_dt    = program_dates.get(item_name_prog, "")
             cmp_evol     = evol_dt[:len(monday_dt)] if monday_dt else evol_dt
-            if cmp_evol and monday_dt and cmp_evol == monday_dt and not dry_run:
+            if cmp_evol and monday_dt and cmp_evol == monday_dt and not dry_run and not force:
                 print(f"  ⏭ Sin cambios desde {monday_dt}, omitiendo")
                 continue
 
@@ -1088,6 +1090,8 @@ if __name__ == "__main__":
                         help="Sincronizar todos los grupos del año indicado (incluye pasados). Ej: --year 2025")
     parser.add_argument("--filter-course", metavar="TEXTO",
                         help="Sincronizar solo grupos cuyo curso contenga este texto. Ej: --filter-course 'LGTBI'")
+    parser.add_argument("--force", action="store_true",
+                        help="Ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos (backfill de respuestas tardías).")
     args = parser.parse_args()
 
     if not any([args.explore, args.setup, args.sync]):
@@ -1099,4 +1103,4 @@ if __name__ == "__main__":
     if args.setup:
         monday_setup_board()
     if args.sync:
-        mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course)
+        mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course, force=args.force)
