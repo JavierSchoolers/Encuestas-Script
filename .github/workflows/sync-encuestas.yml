@@ -25,6 +25,7 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 330   # red de seguridad: falla limpio antes del corte duro de 6h de GitHub
     steps:
       - name: Descargar el repo
         uses: actions/checkout@v4
