@@ -20,7 +20,16 @@ on:
     #   '30 22 * * *' = 22:30 UTC = 00:30 en verano (CEST) / 23:30 en invierno (CET).
     # (Si prefieres 00:30 exacto en INVIERNO usa '30 23 * * *' → en verano sería 01:30.)
     - cron: '30 22 * * *'
-  workflow_dispatch: {}    # botón para lanzarlo a mano desde la pestaña "Actions"
+  workflow_dispatch:       # botón para lanzarlo a mano desde la pestaña "Actions"
+    inputs:
+      force:
+        description: 'Backfill: reprocesar grupos ignorando el salto "sin cambios" por fecha (recoge respuestas tardías).'
+        type: boolean
+        default: false
+      course:
+        description: 'Acotar el backfill a un curso (texto, ej: LGTBI). Vacío = todos. Con esto el backfill tarda minutos.'
+        type: string
+        default: ''
 
 jobs:
   sync:
@@ -48,14 +57,14 @@ jobs:
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
           SKIP_DASHBOARD_REGEN: '1'   # en CI el JSON lo reconstruye Netlify (paso 3)
-        run: python scripts/evolcampus_monday_sync_cursos.py --sync
+        run: python scripts/evolcampus_monday_sync_cursos.py --sync ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
 
       - name: 2) Sync EGH → board 5093144633 (su sync interno enlaza SOLO el board EGH)
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
-        run: python scripts/evolcampus_monday_sync.py --sync
+        run: python scripts/evolcampus_monday_sync.py --sync ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
 
       # El sync EGH (paso 2) lanza link_encuestas_alumnos SOLO con --board egh, así que
       # el board CURSOS nunca recibe "Alumno (rel)" ni "Empresa - dashboard". Lo hacemos
