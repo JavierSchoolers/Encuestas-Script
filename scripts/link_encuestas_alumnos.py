@@ -100,8 +100,22 @@ def monday_query(query, variables=None, retries=3):
                 raise
 
 
-def fetch_all_items(board_id, columns_ids):
-    """Obtiene todos los items de un board con paginación por cursor."""
+def _rules_to_gql(rules):
+    """Convierte una lista de reglas a la cláusula query_params de Monday."""
+    parts = []
+    for r in rules:
+        cv = json.dumps(r.get("compare_value", []))   # JSON array = lista GraphQL válida
+        parts.append('{ column_id: "%s", compare_value: %s, operator: %s }'
+                     % (r["column_id"], cv, r["operator"]))
+    return ", query_params: { rules: [ %s ] }" % ", ".join(parts)
+
+
+def fetch_all_items(board_id, columns_ids, rules=None, need_value=True):
+    """Obtiene items de un board con paginación por cursor.
+    - rules: filtro server-side (query_params) → trae solo los que cumplen.
+    - need_value=False: omite el campo 'value' (lectura más ligera / menos rate-limit)."""
+    cv_fields = "id text value" if need_value else "id text"
+    qp = _rules_to_gql(rules) if rules else ""
     all_items = []
     cursor = None
     page = 0
@@ -113,38 +127,22 @@ def fetch_all_items(board_id, columns_ids):
             query ($cursor: String!) {
                 next_items_page(cursor: $cursor, limit: 500) {
                     cursor
-                    items {
-                        id
-                        name
-                        column_values(ids: %s) {
-                            id
-                            text
-                            value
-                        }
-                    }
+                    items { id name column_values(ids: %s) { %s } }
                 }
             }
-            """ % json.dumps(columns_ids)
+            """ % (json.dumps(columns_ids), cv_fields)
             variables = {"cursor": cursor}
         else:
             query = """
             query ($boardId: [ID!]!) {
                 boards(ids: $boardId) {
-                    items_page(limit: 500) {
+                    items_page(limit: 500%s) {
                         cursor
-                        items {
-                            id
-                            name
-                            column_values(ids: %s) {
-                                id
-                                text
-                                value
-                            }
-                        }
+                        items { id name column_values(ids: %s) { %s } }
                     }
                 }
             }
-            """ % json.dumps(columns_ids)
+            """ % (qp, json.dumps(columns_ids), cv_fields)
             variables = {"boardId": [str(board_id)]}
 
         data = monday_query(query, variables)
@@ -219,6 +217,38 @@ def set_text_column(board_id, item_id, col_id, text_value):
     return set_columns(board_id, item_id, {col_id: text_value})
 
 
+def set_columns_batch(board_id, updates, batch_size=15):
+    """Escribe varias columnas de varios ítems en lotes (mutaciones con alias en
+    una sola petición → ~batch_size× menos llamadas). updates: lista de
+    (item_id, col_values_dict). Si un lote falla, cae a 1×1 para no perder nada."""
+    written = 0
+    total = len(updates)
+    for i in range(0, total, batch_size):
+        chunk = updates[i:i + batch_size]
+        var_defs = ["$board: ID!"]
+        variables = {"board": str(board_id)}
+        muts = []
+        for j, (iid, cv) in enumerate(chunk):
+            var_defs.append("$v%d: JSON!" % j)
+            variables["v%d" % j] = json.dumps(cv)
+            muts.append("m%d: change_multiple_column_values(board_id: $board, item_id: %d, column_values: $v%d) { id }"
+                        % (j, int(iid), j))
+        query = "mutation (%s) { %s }" % (", ".join(var_defs), " ".join(muts))
+        try:
+            if monday_query(query, variables):
+                written += len(chunk)
+        except Exception as e:
+            print(f"    ⚠️  Lote falló ({type(e).__name__}); reintento 1×1…")
+            for iid, cv in chunk:
+                try:
+                    if set_columns(board_id, iid, cv):
+                        written += 1
+                except Exception:
+                    pass
+        print(f"    … {min(i + batch_size, total)}/{total} procesados ({written} escritos)")
+    return written
+
+
 def is_relation_set(item, col_id):
     """Devuelve True si la columna board_relation ya tiene un item vinculado."""
     for cv in item.get("column_values", []):
@@ -260,9 +290,19 @@ def main():
         print("⚠️  FORCE: se sobrescribirán valores existentes")
     print("=" * 70)
 
+    # ── Ruta optimizada para --board cursos ──────────────────────────────────
+    # Procesa SOLO los ítems sin enlazar (no relee los dos boards enteros). Si el
+    # filtrado server-side fallara por lo que sea, cae al método completo de abajo.
+    if args.board == "cursos" and not args.force:
+        try:
+            _process_cursos_fast(args)
+            return
+        except Exception as e:
+            print(f"⚠️  Ruta optimizada falló ({type(e).__name__}: {e}); uso método completo…")
+
     # ── 1. Cargar items del board Alumnos (DNI + Empresa) ──
     print(f"\n📥 Cargando Alumnos ({ALUMNOS_BOARD}) con DNI y Empresa...")
-    alumnos_items = fetch_all_items(ALUMNOS_BOARD, [ALUMNOS_DNI_COL, ALUMNOS_EMPRESA_COL])
+    alumnos_items = fetch_all_items(ALUMNOS_BOARD, [ALUMNOS_DNI_COL, ALUMNOS_EMPRESA_COL], need_value=False)
     print(f"   Total: {len(alumnos_items)} alumnos")
 
     # ── 2. Construir mapas DNI → empresa  y  DNI → item_id del alumno ──
@@ -294,6 +334,73 @@ def main():
         _process_cursos(args, dni_to_alumno_id, dni_to_empresa)
     if args.board in ("egh", "ambos"):
         _process_egh(args, dni_to_empresa)
+
+
+def _process_cursos_fast(args):
+    """Ruta optimizada (solo --board cursos): procesa SOLO los ítems sin
+    'Alumno (rel)' y consulta SOLO los Alumnos de esos DNIs. Evita releer los
+    dos boards enteros cada noche (de ahí que tardara >1h). Si algo del filtrado
+    fallara, main() cae al método completo."""
+    print(f"\n{'─' * 70}")
+    print(f"📋 Encuestas: Cursos ({ENCUESTAS_CURSOS}) · solo ítems sin enlazar")
+
+    # 1) Solo ítems de Cursos con "Alumno (rel)" vacío (filtro server-side).
+    rules = [{"column_id": CURSOS_RELATION_COL, "compare_value": [], "operator": "is_empty"}]
+    enc_items = fetch_all_items(ENCUESTAS_CURSOS,
+                                [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL],
+                                rules=rules)
+    pend, no_dni = [], 0
+    for it in enc_items:
+        dni = normalize_dni(get_column_value(it, CURSOS_DNI_COL))
+        if dni:
+            pend.append((it, dni))
+        else:
+            no_dni += 1
+    print(f"   Sin enlazar: {len(enc_items)} · con DNI: {len(pend)} · sin DNI: {no_dni}")
+    if not pend:
+        print("   ✓ No hay ítems nuevos que enlazar.")
+        return
+
+    # 2) Mapa DNI → alumno desde Alumnos (lectura completa pero LIGERA, sin
+    #    'value'). Se mantiene el match normalizado en Python (quita guiones/
+    #    puntos, mayúsculas) para no perder DNIs con formato distinto entre boards.
+    print(f"   📥 Cargando Alumnos ({ALUMNOS_BOARD})…")
+    alumnos = fetch_all_items(ALUMNOS_BOARD, [ALUMNOS_DNI_COL, ALUMNOS_EMPRESA_COL], need_value=False)
+    dni_to_alumno_id, dni_to_empresa = {}, {}
+    for a in alumnos:
+        d = normalize_dni(get_column_value(a, ALUMNOS_DNI_COL))
+        if not d:
+            continue
+        dni_to_alumno_id[d] = a["id"]
+        e = get_column_value(a, ALUMNOS_EMPRESA_COL)
+        if e:
+            dni_to_empresa[d] = e
+    print(f"   Alumnos con DNI: {len(dni_to_alumno_id)}")
+
+    # 3) Construir y escribir (en lotes) Alumno (rel) + Empresa - dashboard.
+    updates, not_found = [], 0
+    for it, dni in pend:
+        aid = dni_to_alumno_id.get(dni)
+        if not aid:
+            not_found += 1
+            continue
+        cv = {CURSOS_RELATION_COL: {"item_ids": [int(aid)]}}
+        emp = dni_to_empresa.get(dni)
+        if emp and not get_column_value(it, CURSOS_EMPRESA_COL):
+            cv[CURSOS_EMPRESA_COL] = emp
+        updates.append((it["id"], cv))
+    print(f"   A escribir: {len(updates)} · DNI sin alumno en Alumnos: {not_found}")
+
+    if args.dry_run:
+        for it, dni in pend[:20]:
+            print(f"   [dry-run] {it['name'][:60]} | dni={dni}")
+        return
+    if not updates:
+        print("   ✓ Nada que escribir.")
+        return
+
+    written = set_columns_batch(ENCUESTAS_CURSOS, updates)
+    print(f"   ✅ Escritos {written}/{len(updates)} ítems (Alumno rel + Empresa)")
 
 
 def _process_cursos(args, dni_to_alumno_id, dni_to_empresa):
