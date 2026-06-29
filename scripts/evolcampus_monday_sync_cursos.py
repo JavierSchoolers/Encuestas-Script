@@ -1100,6 +1100,82 @@ def _marca_match(m, target):
     return bool(a) and bool(b) and (a in b or b in a)
 
 
+def _monday_gql(query, variables=None, retries=4):
+    """Cliente GraphQL mínimo para Monday (lee mirrors con display_value)."""
+    headers = {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2024-10"}
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    for attempt in range(retries):
+        try:
+            r = requests.post(MONDAY_API, json=payload, headers=headers, timeout=60)
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep((attempt + 1) * 10); continue
+            r.raise_for_status()
+            d = r.json()
+            if "errors" in d:
+                print(f"  ⚠️  GraphQL errors: {d['errors']}"); return None
+            return d.get("data")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+            if attempt < retries - 1:
+                time.sleep((attempt + 1) * 8)
+            else:
+                print(f"  ❌ Monday error tras {retries} intentos: {e}"); raise
+    return None
+
+
+def _norm_dni(s):
+    return re.sub(r'[^0-9A-Za-z]', '', str(s or '')).upper()
+
+
+# Board Matrículas + columnas mirror (verificadas con el conector de Monday):
+#   Nº documento = lookup4 · Cuenta (marca) = reflejo77 · Grupo Evolcampus = reflejo_1__1
+MATRICULAS_BOARD_ID = "1407763206"
+_MAT_COLS = '["reflejo77","lookup4","reflejo_1__1"]'
+
+def _get_company_dnis_groups(company):
+    """Devuelve (set DNIs normalizados, set group_ids EvolCampus) de los alumnos
+    cuya 'Cuenta' (marca) coincide con `company`, leyendo el board de Matrículas.
+    Lee la marca DIRECTA (mirror 'Cuenta'), evitando la cadena Sociedad→Cuenta."""
+    dnis, groups = set(), set()
+    total = 0
+
+    def _process(items):
+        nonlocal total
+        for it in items:
+            total += 1
+            vals = {cv["id"]: (cv.get("display_value") or "") for cv in it.get("column_values", [])}
+            if not _marca_match(vals.get("reflejo77", ""), company):
+                continue
+            d = _norm_dni(vals.get("lookup4", ""))
+            if d:
+                dnis.add(d)
+            for part in re.split(r'[,;\s]+', str(vals.get("reflejo_1__1", "") or "")):
+                if part.isdigit():
+                    groups.add(part)
+
+    q_first = ('query ($b: ID!) { boards(ids: [$b]) { items_page(limit: 500) { cursor '
+               'items { column_values(ids: ' + _MAT_COLS + ') { id ... on MirrorValue { display_value } } } } } }')
+    data = _monday_gql(q_first, {"b": MATRICULAS_BOARD_ID})
+    if data and data.get("boards"):
+        page = data["boards"][0]["items_page"]
+        _process(page.get("items", []))
+        cursor = page.get("cursor")
+        q_next = ('query ($c: String!) { next_items_page(limit: 500, cursor: $c) { cursor '
+                  'items { column_values(ids: ' + _MAT_COLS + ') { id ... on MirrorValue { display_value } } } } }')
+        while cursor:
+            dn = _monday_gql(q_next, {"c": cursor})
+            if not dn or not dn.get("next_items_page"):
+                break
+            np = dn["next_items_page"]
+            _process(np.get("items", []))
+            cursor = np.get("cursor")
+
+    print(f"   Matrículas leídas: {total} · DNIs de '{company}': {len(dnis)} · grupos EvolCampus: {len(groups)}")
+    return dnis, groups
+
+
 def mode_export(excel_path, company=None, filter_course=None, year=None,
                 niveles=("encuesta", "modulo", "programa")):
     """Exporta las encuestas a un Excel con la plantilla del board de Monday, SIN
@@ -1116,25 +1192,24 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
         print("✗ Falta 'openpyxl'. Añádelo a requirements.txt.", file=sys.stderr)
         sys.exit(2)
 
-    # 1) DNIs de la empresa (cadena Matrículas → Sociedad → Cuenta)
+    # 1) DNIs y grupos EvolCampus de la empresa (marca DIRECTA del board Matrículas)
     allowed = None
+    allowed_groups = None
     if company:
-        try:
-            from link_marca_matriculas import build_dni_to_marca
-        except Exception as e:
-            print(f"✗ No se pudo importar build_dni_to_marca: {e}", file=sys.stderr)
-            sys.exit(2)
-        print(f"\n[0] DNIs de la empresa '{company}' desde Matrículas...")
-        dni_to_marca = build_dni_to_marca() or {}
-        allowed = {d for d, m in dni_to_marca.items() if _marca_match(m, company)}
-        print(f"   {len(allowed)} DNIs de '{company}' (de {len(dni_to_marca)} con marca).")
+        print(f"\n[0] DNIs y grupos de '{company}' desde Matrículas...")
+        allowed, allowed_groups = _get_company_dnis_groups(company)
         if not allowed:
-            print("   ⚠️  0 DNIs para esa empresa. Revisa el mapa DNI→Marca "
-                  "(cadena Matrículas→Sociedad→Cuenta, IDs de columna).")
+            print(f"✗ 0 DNIs para '{company}'. Revisa el nombre de la empresa "
+                  f"(columna 'Cuenta' del board Matrículas).", file=sys.stderr)
+            sys.exit(2)
+        if not allowed_groups:
+            print("   ⚠️  Sin 'Grupo Evolcampus' en Matrículas: se recorrerán TODOS "
+                  "los grupos (más lento) filtrando por DNI.")
 
     print("\n[1] Obteniendo grupos de EvolCampus...")
     all_groups = get_all_groups()
-    print(f"  {len(all_groups)} grupos en total")
+    print(f"  {len(all_groups)} grupos en total"
+          + (f" · se procesarán solo los {len(allowed_groups)} grupos de '{company}'" if allowed_groups else ""))
 
     TEMPLATE_COLS = ['Name', 'Programa', 'Grupo', 'Módulo', 'Formador', 'Alumno', 'DNI',
                      'Alumno (rel)', 'Cuenta empresa', 'Empresa - dashboard', '% Global',
@@ -1144,6 +1219,10 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
 
     for g in all_groups:
         group_id, group_name, course = g["group_id"], g["group_name"], g["course"]
+        # Acotar a los grupos de la empresa (rápido): evita descargar cientos de
+        # grupos que no tienen alumnos de esa marca.
+        if allowed_groups and str(group_id) not in allowed_groups:
+            continue
         if is_course_excluded(course):
             continue
         if filter_course and filter_course.lower() not in course.lower():
