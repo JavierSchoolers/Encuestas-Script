@@ -49,7 +49,7 @@ jobs:
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: |
-          python scripts/evolcampus_monday_sync_cursos.py \
+          python -u scripts/evolcampus_monday_sync_cursos.py \
             --export-excel "encuestas-export.xlsx" \
             ${{ inputs.company && format('--company "{0}"', inputs.company) || '' }} \
             ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }} \
