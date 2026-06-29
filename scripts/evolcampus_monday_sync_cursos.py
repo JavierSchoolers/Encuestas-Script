@@ -126,11 +126,17 @@ def evol_token():
     return _evol_token
 
 
-def get_all_groups():
+def get_all_groups(retries=4):
     headers = {"Authorization": f"Bearer {evol_token()}"}
-    resp = requests.get(f"{EVOLCAMPUS_API}/getCoursesGroups", headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    data = None
+    for attempt in range(retries):
+        resp = requests.get(f"{EVOLCAMPUS_API}/getCoursesGroups", headers=headers, timeout=60)
+        if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+            wait = (attempt + 1) * 10
+            print(f"  ⚠️  getCoursesGroups HTTP {resp.status_code}, reintento en {wait}s ({attempt+1}/{retries})")
+            time.sleep(wait); continue
+        resp.raise_for_status()
+        data = resp.json(); break
     groups = []
     items = data if isinstance(data, list) else data.get("courses", data.get("groups", data.get("data", [])))
     for item in items:
@@ -145,7 +151,7 @@ def get_all_groups():
     return groups
 
 
-def get_surveys_by_group(group_id):
+def get_surveys_by_group(group_id, retries=4):
     """Obtiene encuestas de un grupo, siempre con activities=True."""
     try:
         gid = int(group_id)
@@ -153,14 +159,20 @@ def get_surveys_by_group(group_id):
         gid = group_id
     headers = {"Authorization": f"Bearer {evol_token()}"}
     payload = {"groupid": gid, "activities": True}
-    resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
-                         headers=headers, json=payload, timeout=30)
-    if resp.status_code == 400:
-        return None
-    if not resp.ok:
-        print(f"    Detalle error API: {resp.text[:300]}")
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(retries):
+        resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
+                             headers=headers, json=payload, timeout=60)
+        if resp.status_code == 400:
+            return None
+        if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+            wait = (attempt + 1) * 8
+            print(f"    ⚠️  getSurveysByGroup {gid} HTTP {resp.status_code}, reintento en {wait}s")
+            time.sleep(wait); continue
+        if not resp.ok:
+            print(f"    Detalle error API: {resp.text[:300]}")
+        resp.raise_for_status()
+        return resp.json()
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1226,10 +1238,16 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
             print("   ⚠️  Sin 'Grupo Evolcampus' en Matrículas: se recorrerán TODOS "
                   "los grupos (más lento) filtrando por DNI.")
 
-    print("\n[1] Obteniendo grupos de EvolCampus...")
-    all_groups = get_all_groups()
-    print(f"  {len(all_groups)} grupos en total"
-          + (f" · se procesarán solo los {len(allowed_groups)} grupos de '{company}'" if allowed_groups else ""))
+    # Si conocemos los grupos de la empresa (export_filters), vamos DIRECTOS a ellos
+    # y NO pedimos getCoursesGroups (que a veces devuelve 500 y no hace falta).
+    if allowed_groups:
+        groups_to_do = [(gid, "", "") for gid in sorted(allowed_groups, key=lambda x: int(x) if str(x).isdigit() else 0)]
+        print(f"\n[1] {len(groups_to_do)} grupos de '{company}' (directo, sin listar todo EvolCampus)")
+    else:
+        print("\n[1] Obteniendo grupos de EvolCampus...")
+        all_groups = get_all_groups()
+        groups_to_do = [(g["group_id"], g["group_name"], g["course"]) for g in all_groups]
+        print(f"  {len(groups_to_do)} grupos en total")
 
     TEMPLATE_COLS = ['Name', 'Programa', 'Grupo', 'Módulo', 'Formador', 'Alumno', 'DNI',
                      'Alumno (rel)', 'Cuenta empresa', 'Empresa - dashboard', '% Global',
@@ -1237,28 +1255,32 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
                      'Fecha última encuesta', 'Comentarios', 'Fecha inicio', 'Fecha fin']
     out_rows = []
 
-    for g in all_groups:
-        group_id, group_name, course = g["group_id"], g["group_name"], g["course"]
-        # Acotar a los grupos de la empresa (rápido): evita descargar cientos de
-        # grupos que no tienen alumnos de esa marca.
-        if allowed_groups and str(group_id) not in allowed_groups:
-            continue
-        if is_course_excluded(course):
-            continue
-        if filter_course and filter_course.lower() not in course.lower():
-            continue
-        if is_group_excluded(group_name):
-            continue
-        if year and not is_group_in_year(group_name, year):
-            continue
-        course_clean = course.strip()
+    for group_id, group_name, course in groups_to_do:
+        # En el camino "listar todo" aplicamos exclusiones antes de descargar.
+        if not allowed_groups:
+            if is_course_excluded(course):
+                continue
+            if filter_course and filter_course.lower() not in course.lower():
+                continue
+            if is_group_excluded(group_name):
+                continue
+            if year and not is_group_in_year(group_name, year):
+                continue
         try:
             raw = get_surveys_by_group(group_id)
         except Exception as e:
-            print(f"  ⚠️  {course_clean} / {group_name}: error EvolCampus ({e}); se omite.")
+            print(f"  ⚠️  grupo {group_id}: error EvolCampus ({e}); se omite.")
             continue
         if raw is None:
             continue
+        # Cuando vamos directos, el curso/grupo lo da la propia respuesta de encuestas.
+        if allowed_groups:
+            grp = raw.get("group", raw) if isinstance(raw, dict) else {}
+            course = (grp.get("course") or course or "").strip()
+            group_name = (grp.get("name") or group_name or str(group_id)).strip()
+            if filter_course and filter_course.lower() not in course.lower():
+                continue
+        course_clean = course.strip()
         program_row, module_rows, individual_rows = process_group_data(
             raw, group_name, course, allowed_dnis=allowed)
         # Si filtramos por empresa y no hay alumnos de ella en este grupo → saltar
