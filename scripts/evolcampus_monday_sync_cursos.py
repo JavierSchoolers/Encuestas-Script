@@ -250,10 +250,14 @@ def parse_group_dates(group_name):
     return start_date, end_date
 
 
-def process_group_data(raw_data, group_name, course_name):
+def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
     """
     Procesa la respuesta cruda de getSurveysByGroup para cursos NO-EGH.
     El nombre del módulo viene de survey["subject"].
+
+    Si allowed_dnis (set de DNIs normalizados) está definido, SOLO se tienen en
+    cuenta los registros de esos alumnos (export filtrado por empresa). Las medias
+    de módulo/programa se recalculan únicamente con esos alumnos.
     """
     grp = raw_data.get("group", raw_data)
     surveys = grp.get("surveys", [])
@@ -314,6 +318,11 @@ def process_group_data(raw_data, group_name, course_name):
         for record in records:
             student   = record.get("name") or "Anónimo"
             student_dni = record.get("id_card") or ""
+            # Export filtrado por empresa: saltar alumnos que no pertenecen a la marca.
+            if allowed_dnis is not None:
+                _dnin = re.sub(r'[^0-9A-Za-z]', '', str(student_dni)).upper()
+                if not _dnin or _dnin not in allowed_dnis:
+                    continue
             questions = record.get("questions", [])
             has_answer = False
 
@@ -1077,6 +1086,124 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EXPORT a Excel (plantilla de Monday) — para subida manual
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _marca_match(m, target):
+    """Compara marcas de forma laxa (acentos/espacios/mayúsculas)."""
+    import unicodedata
+    def n(x):
+        x = unicodedata.normalize('NFD', str(x or '').lower())
+        x = ''.join(c for c in x if unicodedata.category(c) != 'Mn')
+        return re.sub(r'[^a-z0-9]', '', x)
+    a, b = n(m), n(target)
+    return bool(a) and bool(b) and (a in b or b in a)
+
+
+def mode_export(excel_path, company=None, filter_course=None, year=None,
+                niveles=("encuesta", "modulo", "programa")):
+    """Exporta las encuestas a un Excel con la plantilla del board de Monday, SIN
+    escribir en Monday. Pensado para subida manual de programas ya finalizados.
+
+    - Recorre TODOS los grupos (también finalizados), no solo los activos.
+    - Si company está definido, filtra a los alumnos de esa marca (mapa DNI→Marca
+      de Matrículas) y recalcula las medias de módulo/programa solo con ellos.
+    - niveles: qué filas incluir (encuesta=por alumno, modulo, programa).
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        print("✗ Falta 'openpyxl'. Añádelo a requirements.txt.", file=sys.stderr)
+        sys.exit(2)
+
+    # 1) DNIs de la empresa (cadena Matrículas → Sociedad → Cuenta)
+    allowed = None
+    if company:
+        try:
+            from link_marca_matriculas import build_dni_to_marca
+        except Exception as e:
+            print(f"✗ No se pudo importar build_dni_to_marca: {e}", file=sys.stderr)
+            sys.exit(2)
+        print(f"\n[0] DNIs de la empresa '{company}' desde Matrículas...")
+        dni_to_marca = build_dni_to_marca() or {}
+        allowed = {d for d, m in dni_to_marca.items() if _marca_match(m, company)}
+        print(f"   {len(allowed)} DNIs de '{company}' (de {len(dni_to_marca)} con marca).")
+        if not allowed:
+            print("   ⚠️  0 DNIs para esa empresa. Revisa el mapa DNI→Marca "
+                  "(cadena Matrículas→Sociedad→Cuenta, IDs de columna).")
+
+    print("\n[1] Obteniendo grupos de EvolCampus...")
+    all_groups = get_all_groups()
+    print(f"  {len(all_groups)} grupos en total")
+
+    TEMPLATE_COLS = ['Name', 'Programa', 'Grupo', 'Módulo', 'Formador', 'Alumno', 'DNI',
+                     'Alumno (rel)', 'Cuenta empresa', 'Empresa - dashboard', '% Global',
+                     'Respuestas', '% Formador', '% Contenido', '% Formato', 'Nº Comentarios',
+                     'Fecha última encuesta', 'Comentarios', 'Fecha inicio', 'Fecha fin']
+    out_rows = []
+
+    for g in all_groups:
+        group_id, group_name, course = g["group_id"], g["group_name"], g["course"]
+        if is_course_excluded(course):
+            continue
+        if filter_course and filter_course.lower() not in course.lower():
+            continue
+        if is_group_excluded(group_name):
+            continue
+        if year and not is_group_in_year(group_name, year):
+            continue
+        course_clean = course.strip()
+        try:
+            raw = get_surveys_by_group(group_id)
+        except Exception as e:
+            print(f"  ⚠️  {course_clean} / {group_name}: error EvolCampus ({e}); se omite.")
+            continue
+        if raw is None:
+            continue
+        program_row, module_rows, individual_rows = process_group_data(
+            raw, group_name, course, allowed_dnis=allowed)
+        # Si filtramos por empresa y no hay alumnos de ella en este grupo → saltar
+        if allowed is not None and not individual_rows:
+            continue
+        start_date = program_row.get("fecha_inicio", "")
+        end_date   = program_row.get("fecha_fin", "")
+
+        def _add(row, level):
+            name = {
+                "programa": f"{course_clean} — {group_name}",
+                "modulo":   f"{course_clean} — {group_name} — {row.get('modulo','')}",
+                "encuesta": f"{course_clean} — {group_name} — {row.get('modulo','')} — {row.get('alumno','')}",
+            }[level]
+            out_rows.append([
+                name, course_clean, group_name, row.get("modulo", ""), row.get("formador", ""),
+                row.get("alumno", ""), row.get("dni", ""), "", "", (company or ""),
+                row.get("pct_global", ""), row.get("respuestas", ""),
+                row.get("pct_formador", ""), row.get("pct_contenido", ""), row.get("pct_formato", ""),
+                row.get("n_comentarios", ""), row.get("fecha_ultima", ""), row.get("comentarios", ""),
+                start_date, end_date,
+            ])
+
+        if "programa" in niveles:
+            _add(program_row, "programa")
+        if "modulo" in niveles:
+            for mr in module_rows:
+                _add(mr, "modulo")
+        if "encuesta" in niveles:
+            for ir in individual_rows:
+                _add(ir, "encuesta")
+        print(f"  ✓ {course_clean} / {group_name}: {len(individual_rows)} encuestas · {len(module_rows)} módulos")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "encuestas programas"
+    ws.append(TEMPLATE_COLS)
+    for r in out_rows:
+        ws.append(r)
+    wb.save(excel_path)
+    print(f"\n✅ Export: {len(out_rows)} filas → {excel_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CLI
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1092,9 +1219,15 @@ if __name__ == "__main__":
                         help="Sincronizar solo grupos cuyo curso contenga este texto. Ej: --filter-course 'LGTBI'")
     parser.add_argument("--force", action="store_true",
                         help="Ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos (backfill de respuestas tardías).")
+    parser.add_argument("--export-excel", metavar="PATH",
+                        help="Exporta encuestas a un Excel con la plantilla de Monday (NO escribe en Monday). Para subida manual.")
+    parser.add_argument("--company", metavar="TEXTO",
+                        help="Filtra el export a los alumnos de esa marca/empresa. Ej: --company 'Garden Hotels'")
+    parser.add_argument("--niveles", metavar="LISTA", default="encuesta,modulo,programa",
+                        help="Niveles a exportar (coma): encuesta,modulo,programa. Por defecto los tres.")
     args = parser.parse_args()
 
-    if not any([args.explore, args.setup, args.sync]):
+    if not any([args.explore, args.setup, args.sync, args.export_excel]):
         parser.print_help()
         sys.exit(0)
 
@@ -1104,3 +1237,7 @@ if __name__ == "__main__":
         monday_setup_board()
     if args.sync:
         mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course, force=args.force)
+    if args.export_excel:
+        mode_export(args.export_excel, company=args.company, filter_course=args.filter_course,
+                    year=args.year,
+                    niveles=tuple(s.strip() for s in (args.niveles or "").split(",") if s.strip()))
