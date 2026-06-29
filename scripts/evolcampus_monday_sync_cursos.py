@@ -1254,8 +1254,11 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
                      'Respuestas', '% Formador', '% Contenido', '% Formato', 'Nº Comentarios',
                      'Fecha última encuesta', 'Comentarios', 'Fecha inicio', 'Fecha fin']
     out_rows = []
+    _ntot = len(groups_to_do)
 
-    for group_id, group_name, course in groups_to_do:
+    for _gi, (group_id, group_name, course) in enumerate(groups_to_do, 1):
+        if allowed_groups:
+            print(f"  [{_gi}/{_ntot}] grupo {group_id}…")
         # En el camino "listar todo" aplicamos exclusiones antes de descargar.
         if not allowed_groups:
             if is_course_excluded(course):
