@@ -56,9 +56,41 @@ tools/
   gen_egh_parte_map.py             (regenera el mapa tema→Parte EGH desde el Excel)
 ```
 
-## Cambiar la hora
+## Disparo diario (cron externo)
 
-Edita el `cron` en `sync-encuestas.yml` (UTC; España = UTC+1 invierno / +2 verano).
+NO usamos el cron interno de GitHub (es "best-effort": se saltaba y desplazaba
+ejecuciones). El workflow se lanza con el evento `workflow_dispatch` desde un
+programador externo (cron-job.org) a las **00:30 hora de España**.
+
+**1) Token de GitHub (una vez):**
+- GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate.
+- Repository access: **Only select repositories → Encuestas-Script**.
+- Permissions → Repository → **Actions: Read and write**.
+- Copia el token (empieza por `github_pat_…`). Guárdalo en secreto.
+
+**2) cron-job.org (una vez):**
+- Crea una cuenta gratis → **Create cronjob**.
+- URL: `https://api.github.com/repos/JavierSchoolers/Encuestas-Script/actions/workflows/sync-encuestas.yml/dispatches`
+- Método: **POST**
+- Headers:
+  - `Authorization: Bearer github_pat_…`
+  - `Accept: application/vnd.github+json`
+  - `X-GitHub-Api-Version: 2022-11-28`
+  - `Content-Type: application/json`
+- Body: `{"ref":"main"}`
+- Schedule: **00:30**, todos los días, timezone **Europe/Madrid** (cron-job.org sí
+  ajusta el horario de verano → 00:30 reales todo el año).
+
+**Probar el disparo a mano (terminal):**
+```bash
+curl -X POST \
+  -H "Authorization: Bearer github_pat_…" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/JavierSchoolers/Encuestas-Script/actions/workflows/sync-encuestas.yml/dispatches \
+  -d '{"ref":"main"}'
+```
+Respuesta `204 No Content` = OK; en Actions aparece un run nuevo en segundos.
 
 ## Lanzar a mano y verificar
 
