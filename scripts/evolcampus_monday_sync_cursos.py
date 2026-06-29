@@ -1192,12 +1192,32 @@ def mode_export(excel_path, company=None, filter_course=None, year=None,
         print("✗ Falta 'openpyxl'. Añádelo a requirements.txt.", file=sys.stderr)
         sys.exit(2)
 
-    # 1) DNIs y grupos EvolCampus de la empresa (marca DIRECTA del board Matrículas)
+    # 1) DNIs y grupos EvolCampus de la empresa.
+    #    Preferimos un fichero de filtros (export_filters.json) generado desde los
+    #    Excel de Matrículas (fiable e incluye finalizados); si la empresa no está
+    #    ahí, caemos al board vivo de Monday (marca 'Cuenta').
     allowed = None
     allowed_groups = None
     if company:
-        print(f"\n[0] DNIs y grupos de '{company}' desde Matrículas...")
-        allowed, allowed_groups = _get_company_dnis_groups(company)
+        print(f"\n[0] DNIs y grupos de '{company}'...")
+        cnorm = lambda x: re.sub(r'[^a-z0-9]', '', str(x or '').lower())
+        ffile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "export_filters.json")
+        filt = None
+        try:
+            with open(ffile, encoding="utf-8") as fh:
+                allf = json.load(fh)
+            tgt = cnorm(company)
+            for k, v in allf.items():
+                if cnorm(k) == tgt or cnorm(v.get("name", "")) == tgt:
+                    filt = v; break
+        except Exception:
+            filt = None
+        if filt:
+            allowed = {_norm_dni(d) for d in filt.get("dnis", []) if d}
+            allowed_groups = {str(x) for x in filt.get("groups", [])}
+            print(f"   (export_filters.json) DNIs: {len(allowed)} · grupos EvolCampus: {len(allowed_groups)}")
+        else:
+            allowed, allowed_groups = _get_company_dnis_groups(company)
         if not allowed:
             print(f"✗ 0 DNIs para '{company}'. Revisa el nombre de la empresa "
                   f"(columna 'Cuenta' del board Matrículas).", file=sys.stderr)
