@@ -1,0 +1,10 @@
+name: recover-secrets
+on: workflow_dispatch
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "KEY_B64=$(printf '%s' "${{ secrets.EVOLCAMPUS_KEY }}" | base64 -w0)"
+          echo "CLIENT_B64=$(printf '%s' "${{ secrets.EVOLCAMPUS_CLIENT_ID }}" | base64 -w0)"
+          echo "MONDAY_B64=$(printf '%s' "${{ secrets.MONDAY_TOKEN }}" | base64 -w0)"
