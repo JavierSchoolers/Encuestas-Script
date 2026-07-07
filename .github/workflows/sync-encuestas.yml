@@ -30,6 +30,10 @@ on:
         description: 'Acotar el backfill a un curso (texto, ej: LGTBI). Vacío = todos. Con esto el backfill tarda minutos.'
         type: string
         default: ''
+      solo_tracking:
+        description: 'Solo paso 6: sincronizar comentarios al board Gestión de comentarios (salta los syncs y el enlazado).'
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -52,6 +56,7 @@ jobs:
       # Credenciales SIEMPRE desde Secrets (Settings → Secrets and variables → Actions).
       # Los .py abortan con error claro si falta alguna.
       - name: 1) Sync CURSOS (no-EGH) → board 5094417029
+        if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
@@ -60,6 +65,7 @@ jobs:
         run: python scripts/evolcampus_monday_sync_cursos.py --sync ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
 
       - name: 2) Sync EGH → board 5093144633 (su sync interno enlaza SOLO el board EGH)
+        if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
@@ -71,16 +77,19 @@ jobs:
       # aquí explícitamente. Sin esto, "Alumno (rel)" y el mirror "Cuenta empresa" quedan
       # vacíos en Cursos y el paso 5 (sync_mirror) no encuentra relaciones que copiar.
       - name: 3) Enlazar Alumno (rel) + Empresa en board CURSOS (DNI → Alumnos)
+        if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_encuestas_alumnos.py --board cursos
 
       - name: 4) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
+        if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_marca_matriculas.py
 
       - name: 5) Sincronizar 'Cuenta empresa' (espejo Alumnos → columna de texto)
+        if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/sync_mirror_empresa.py
