@@ -9,7 +9,9 @@
 #      mirror de esa relación → se rellena solo en cuanto la relación existe.
 #   4) link_marca_matriculas.py  → "Empresa - dashboard" con la Marca real (Matrículas).
 #   5) sync_mirror_empresa.py    → copia la empresa del board Alumnos a "Cuenta empresa".
-#   6) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
+#   6) monday_to_dashboard.py --sync-tracking → comentarios (sentimiento/acción) al
+#      board "Gestión de comentarios" (5094293806), upsert idempotente.
+#   7) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
 
 name: Sync encuestas EvolCampus → Monday
 
@@ -96,37 +98,18 @@ jobs:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/sync_mirror_empresa.py
 
-      - name: 6) Refrescar el dashboard (reconstruir encuestas en Netlify)
+      # Comentarios → board "Gestión de comentarios" (5094293806): lee "Por Encuesta"
+      # de EGH+Cursos, calcula sentimiento/acción y hace UPSERT idempotente (por
+      # hash alumno+módulo+grupo). No pisa estado/responsable/acción (manuales).
+      # Va como paso secuencial (nunca en paralelo → sin duplicados por race).
+      # SKIP_DASHBOARD_REGEN=1 → solo sincroniza el tracking (no genera JSON local).
+      - name: 6) Sincronizar comentarios → board Gestión de comentarios
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+          SKIP_DASHBOARD_REGEN: '1'
+        run: python scripts/monday_to_dashboard.py --sync-tracking
+
+      - name: 7) Refrescar el dashboard (reconstruir encuestas en Netlify)
         if: always()   # refresca aunque algún paso haya fallado: sube lo que sí se escribió
         run: |
           curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
-
-      # 7) AVISO POR EMAIL SI EL SYNC FALLA (cualquier paso 1-5).
-      #    Cubre el caso "la Action se ejecuta pero algo peta". El caso "el cron NO
-      #    dispara la Action" NO se cubre aquí (la Action no corre): activa la alerta
-      #    de fallo integrada en cron-job.org para ese otro caso.
-      #    Requisitos (Settings → Secrets and variables → Actions):
-      #      - Secret  RESEND_API_KEY  (la misma clave de Resend)
-      #      - Secret/Variable ALERT_EMAIL_TO  (a quién avisar; si falta → javier@schoolers.io)
-      #    El remitente usa el dominio schoolers.io (verificado en Resend).
-      - name: 7) Avisar por email si el sync falló
-        if: failure()
-        env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
-        run: |
-          if [ -z "$RESEND_API_KEY" ]; then
-            echo "Sin RESEND_API_KEY configurada; no se envía aviso."
-            exit 0
-          fi
-          TO="${ALERT_EMAIL_TO:-javier@schoolers.io}"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          BODY=$(jq -n --arg to "$TO" --arg url "$RUN_URL" --arg repo "$GITHUB_REPOSITORY" \
-            '{from:"Sync Schoolers <noreply@schoolers.io>", to:[$to],
-              subject:"⚠️ Falló el sync EvolCampus → Monday",
-              html:("El sync nocturno <b>falló</b> en <b>"+$repo+"</b>.<br><br>Revisa la ejecución y sus logs:<br><a href=\""+$url+"\">"+$url+"</a>")}')
-          curl -sS -X POST https://api.resend.com/emails \
-            -H "Authorization: Bearer $RESEND_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$BODY"
-          echo "Aviso de fallo enviado a $TO"
