@@ -978,12 +978,16 @@ def sync_comments_to_tracking_board(dashboard_data, tracking_board_id=None):
         alumno_v = col_text(cvm, TRACKING_COL["alumno"])
         if curso_v and alumno_v:
             ih = _identity_hash(curso_v, grupo_v, modulo_v, alumno_v)
+            # La casilla "requiere acción" viene como texto "v"/"" en el board;
+            # la normalizamos a "true"/"false" para que el sig case con el que
+            # genera el upsert y los ítems sin cambios se SALTEN (no re-update).
+            _chk = "true" if col_text(cvm, TRACKING_COL["requiere_accion"]).strip() else "false"
             identity_to_item[ih] = {
                 "id":  item["id"],
                 "sig": "{}||{}||{}".format(
                     col_text(cvm, TRACKING_COL["comentario"]),
                     col_text(cvm, TRACKING_COL["sentimiento"]),
-                    col_text(cvm, TRACKING_COL["requiere_accion"]),
+                    _chk,
                 ),
             }
 
@@ -1078,7 +1082,14 @@ def sync_comments_to_tracking_board(dashboard_data, tracking_board_id=None):
                 })
                 new_id = result.get("create_item", {}).get("id")
                 if new_id:
-                    identity_to_item[c["identity_hash"]] = new_id
+                    # Guardar como dict {id, sig} — igual que las entradas leídas del
+                    # board — para que un 2º comentario con la misma identidad
+                    # (alumno+módulo+grupo) haga update y no rompa con existing["id"].
+                    _req = "true" if c["requires_action"] else "false"
+                    identity_to_item[c["identity_hash"]] = {
+                        "id":  new_id,
+                        "sig": "{}||{}||{}".format(c["texto"], sentiment_label, _req),
+                    }
                 created += 1
             except Exception as e:
                 print(f"  ✗ Error creando {item_name}: {e}")
