@@ -66,19 +66,6 @@ jobs:
           EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
         run: python scripts/evolcampus_monday_sync.py --sync ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
 
-      # Backfill AUTOMÁTICO del curso LGTBI tras el sync normal: lo reprocesa con
-      # --force (ignora el salto "sin cambios" por fecha) para recoger respuestas
-      # tardías. Se ejecuta SIEMPRE, también en el disparo diario de las 00:30.
-      # Va antes del enlazado (pasos 3-5) para que esas filas se enlacen y refresquen
-      # en la misma ejecución. LGTBI es un curso del board CURSOS (no EGH).
-      - name: 2b) Backfill LGTBI (Cursos, --force)
-        env:
-          MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
-          EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
-          EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
-          SKIP_DASHBOARD_REGEN: '1'   # el JSON lo reconstruye Netlify (paso 6)
-        run: python scripts/evolcampus_monday_sync_cursos.py --sync --force --filter-course "LGTBI"
-
       # El sync EGH (paso 2) lanza link_encuestas_alumnos SOLO con --board egh, así que
       # el board CURSOS nunca recibe "Alumno (rel)" ni "Empresa - dashboard". Lo hacemos
       # aquí explícitamente. Sin esto, "Alumno (rel)" y el mirror "Cuenta empresa" quedan
