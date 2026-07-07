@@ -50,6 +50,8 @@ scripts/
   link_encuestas_alumnos.py        (enlaza empresa/alumno por DNI en ambos boards)
   link_marca_matriculas.py         (empresa por Marca real desde Matrículas FUNDAE)
   sync_mirror_empresa.py           (espejo empresa Alumnos → texto "Cuenta empresa")
+  monday_to_dashboard.py           (--sync-tracking: comentarios → board Gestión de
+                                    comentarios 5094293806, sentimiento/acción, upsert)
   monday_config.json               (board EGH 5093144633 + col_ids)
   monday_config_cursos.json        (board Cursos 5094417029 + col_ids)
 tools/
