@@ -217,13 +217,21 @@ def set_text_column(board_id, item_id, col_id, text_value):
     return set_columns(board_id, item_id, {col_id: text_value})
 
 
-def set_columns_batch(board_id, updates, batch_size=15):
+def set_columns_batch(board_id, updates, batch_size=15, max_seconds=None):
     """Escribe varias columnas de varios ítems en lotes (mutaciones con alias en
     una sola petición → ~batch_size× menos llamadas). updates: lista de
-    (item_id, col_values_dict). Si un lote falla, cae a 1×1 para no perder nada."""
+    (item_id, col_values_dict). Si un lote falla, cae a 1×1 para no perder nada.
+    max_seconds: v60eu · presupuesto de tiempo. Si se supera, se para y devuelve lo
+    escrito (el resto queda para la próxima ejecución — es idempotente). Evita que
+    un backlog grande haga que GitHub Actions cancele el job por exceder el límite."""
     written = 0
     total = len(updates)
+    _t0 = time.time()
     for i in range(0, total, batch_size):
+        if max_seconds and (time.time() - _t0) > max_seconds:
+            print(f"    ⏱️  Tope de tiempo ({max_seconds}s): paro en {i}/{total}. "
+                  f"El resto ({total - i}) se enlazará en la próxima ejecución.")
+            break
         chunk = updates[i:i + batch_size]
         var_defs = ["$board: ID!"]
         variables = {"board": str(board_id)}
@@ -349,14 +357,22 @@ def _process_cursos_fast(args):
     enc_items = fetch_all_items(ENCUESTAS_CURSOS,
                                 [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL],
                                 rules=rules)
-    pend, no_dni = [], 0
+    pend, no_dni, ya_rel = [], 0, 0
     for it in enc_items:
+        # v60eu · GUARDA CLIENTE: si el filtro server-side is_empty NO filtró
+        # (bajo API 2024-10 devolvía el board ENTERO → re-escribía los ~35k cada
+        # noche → >5h → GitHub Actions lo cancelaba), NO reescribimos los ítems que
+        # YA tienen 'Alumno (rel)'. Solo procesamos los realmente vacíos.
+        if is_relation_set(it, CURSOS_RELATION_COL):
+            ya_rel += 1
+            continue
         dni = normalize_dni(get_column_value(it, CURSOS_DNI_COL))
         if dni:
             pend.append((it, dni))
         else:
             no_dni += 1
-    print(f"   Sin enlazar: {len(enc_items)} · con DNI: {len(pend)} · sin DNI: {no_dni}")
+    print(f"   Recibidos: {len(enc_items)} · ya enlazados (saltados): {ya_rel} · "
+          f"sin enlazar con DNI: {len(pend)} · sin DNI: {no_dni}")
     if not pend:
         print("   ✓ No hay ítems nuevos que enlazar.")
         return
@@ -399,7 +415,10 @@ def _process_cursos_fast(args):
         print("   ✓ Nada que escribir.")
         return
 
-    written = set_columns_batch(ENCUESTAS_CURSOS, updates)
+    # v60eu · Presupuesto de tiempo (env LINK_MAX_SECONDS, por defecto 3h) para no
+    # agotar el límite de GitHub Actions con un backlog grande.
+    _budget = int(os.environ.get("LINK_MAX_SECONDS", "10800"))
+    written = set_columns_batch(ENCUESTAS_CURSOS, updates, max_seconds=_budget)
     print(f"   ✅ Escritos {written}/{len(updates)} ítems (Alumno rel + Empresa)")
 
 
