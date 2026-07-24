@@ -55,6 +55,12 @@ CURSOS_BOARD         = 5094417029
 CURSOS_RELATION_COLS = ["board_relation_mm2fezr6", "board_relation_mm2fs9v"]  # Dos relaciones
 CURSOS_TEXT_COL      = "text_mm2fc06a"             # Columna texto "Cuenta empresa"
 
+# ── Board: Encuestas Subvenciones RSK y AEHCOS (5100940645) ──
+# Clon de Cursos; solo existe la relación board_relation_mm2fezr6 (no la 2ª).
+SUBV_BOARD           = 5100940645
+SUBV_RELATION_COLS   = ["board_relation_mm2fezr6"]
+SUBV_TEXT_COL        = "text_mm2fc06a"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MONDAY API HELPERS
@@ -384,7 +390,7 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Solo mostrar qué se copiaría, sin escribir")
-    parser.add_argument("--board", choices=["cursos", "egh", "ambos"], default="ambos",
+    parser.add_argument("--board", choices=["cursos", "egh", "subvenciones", "ambos"], default="ambos",
                         help="Board(s) a procesar (default: ambos)")
     parser.add_argument("--force", action="store_true",
                         help="Sobrescribir columna texto aunque ya tenga un valor distinto")
@@ -412,6 +418,15 @@ def main():
         c, e = process_board(
             "Encuestas: Cursos", CURSOS_BOARD,
             CURSOS_RELATION_COLS, CURSOS_TEXT_COL,
+            dry_run=args.dry_run, force=args.force
+        )
+        total_copied += c
+        total_errors += e
+
+    if args.board in ("subvenciones", "ambos"):
+        c, e = process_board(
+            "Encuestas: Subvenciones", SUBV_BOARD,
+            SUBV_RELATION_COLS, SUBV_TEXT_COL,
             dry_run=args.dry_run, force=args.force
         )
         total_copied += c

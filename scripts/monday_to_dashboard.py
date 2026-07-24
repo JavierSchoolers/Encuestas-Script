@@ -134,6 +134,11 @@ CURSOS_GROUP_MODULO_ID   = "group_mm29fvs5"
 CURSOS_GROUP_PROGRAMA_ID = "group_mm296ky1"
 CURSOS_GROUP_ENC_ID      = "group_mm291wbp"   # Por Encuesta (alumno x módulo)
 
+# ── Board de Subvenciones RSK y AEHCOS ──
+# Clon ESTRUCTURAL del board Cursos: mismos IDs de grupo y de columna → se procesa
+# con COL_CURSOS y los CURSOS_GROUP_*; solo cambia el board_id.
+SUBV_BOARD_ID            = "5100940645"
+
 COL_CURSOS = {
     "grupo":         "text_mm29712e",
     "modulo":        "text_mm29djjz",
@@ -782,10 +787,11 @@ def _extract_empresa(items, col, group_enc_id, module_companies, student_empresa
         all_companies.add(empresa)
 
 
-def build_dashboard_json(items, cursos_items=None):
+def build_dashboard_json(items, cursos_items=None, subv_items=None):
     """Reconstruye la estructura courses → groups → activities del dashboard.
     items: items del board EGH/CSUL
     cursos_items: items del board de Cursos (opcional)
+    subv_items: items del board de Subvenciones RSK y AEHCOS (opcional; clon de Cursos)
     """
     prog_index       = {}
     groups_map       = defaultdict(lambda: defaultdict(list))
@@ -797,6 +803,8 @@ def build_dashboard_json(items, cursos_items=None):
     _extract_empresa(items, COL, GROUP_ENC_EGH_ID, module_companies, student_empresa, all_companies)
     if cursos_items:
         _extract_empresa(cursos_items, COL_CURSOS, CURSOS_GROUP_ENC_ID, module_companies, student_empresa, all_companies)
+    if subv_items:
+        _extract_empresa(subv_items, COL_CURSOS, CURSOS_GROUP_ENC_ID, module_companies, student_empresa, all_companies)
 
     # Procesar board EGH/CSUL
     _process_board_items(items, COL, GROUP_MODULO_ID, GROUP_ENC_EGH_ID, GROUP_PROGRAMA_ID, prog_index, groups_map)
@@ -804,6 +812,10 @@ def build_dashboard_json(items, cursos_items=None):
     # Procesar board de Cursos (si hay)
     if cursos_items:
         _process_board_items(cursos_items, COL_CURSOS, CURSOS_GROUP_MODULO_ID, CURSOS_GROUP_ENC_ID, CURSOS_GROUP_PROGRAMA_ID, prog_index, groups_map)
+
+    # Procesar board de Subvenciones (clon de Cursos → mismos grupos/columnas)
+    if subv_items:
+        _process_board_items(subv_items, COL_CURSOS, CURSOS_GROUP_MODULO_ID, CURSOS_GROUP_ENC_ID, CURSOS_GROUP_PROGRAMA_ID, prog_index, groups_map)
 
     # ── Construir estructura final ──
     courses_out = {}
@@ -910,10 +922,10 @@ def _identity_hash(curso, grupo, modulo, alumno):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def build_tracking_source_from_items(items, cursos_items=None):
+def build_tracking_source_from_items(items, cursos_items=None, subv_items=None):
     """Construye el origen de datos para el tracking board leyendo directamente
-    de los ítems 'Por Encuesta' de EGH y Cursos, sin pasar por el dashboard JSON.
-    Devuelve un dict compatible con sync_comments_to_tracking_board."""
+    de los ítems 'Por Encuesta' de EGH, Cursos y Subvenciones, sin pasar por el
+    dashboard JSON. Devuelve un dict compatible con sync_comments_to_tracking_board."""
     mod_comments = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
     def _process(enc_items, col):
@@ -939,6 +951,8 @@ def build_tracking_source_from_items(items, cursos_items=None):
     _process([i for i in items if i["group"]["id"] == GROUP_ENC_EGH_ID], COL)
     if cursos_items:
         _process([i for i in cursos_items if i["group"]["id"] == CURSOS_GROUP_ENC_ID], COL_CURSOS)
+    if subv_items:
+        _process([i for i in subv_items if i["group"]["id"] == CURSOS_GROUP_ENC_ID], COL_CURSOS)
 
     courses_out = {}
     for course, groups in mod_comments.items():
@@ -1122,6 +1136,10 @@ if __name__ == "__main__":
     cursos_items = fetch_all_items(CURSOS_BOARD_ID)
     print(f"  ✓ {len(cursos_items)} ítems obtenidos")
 
+    print(f"[1c] Leyendo ítems del board Subvenciones ({SUBV_BOARD_ID})...")
+    subv_items = fetch_all_items(SUBV_BOARD_ID)
+    print(f"  ✓ {len(subv_items)} ítems obtenidos")
+
     # v60cj · En CI (GitHub Actions) SKIP_DASHBOARD_REGEN=1 → solo sincronizar el
     # board de tracking. El JSON del dashboard lo reconstruye Netlify, y la
     # inyección en HTML locales no aplica en CI.
@@ -1130,7 +1148,7 @@ if __name__ == "__main__":
     data = None
     if not _ci:
         print(f"[2] Construyendo estructura del dashboard...")
-        data = build_dashboard_json(items, cursos_items=cursos_items)
+        data = build_dashboard_json(items, cursos_items=cursos_items, subv_items=subv_items)
         n_courses = len(data["courses"])
         n_groups  = sum(len(g) for g in data["courses"].values())
         n_acts    = sum(
@@ -1148,7 +1166,7 @@ if __name__ == "__main__":
 
     if args.sync_tracking:
         print(f"\n[·] Sincronizando comentarios al board de tracking...")
-        tracking_source = build_tracking_source_from_items(items, cursos_items)
+        tracking_source = build_tracking_source_from_items(items, cursos_items, subv_items)
         sync_comments_to_tracking_board(tracking_source, args.tracking_board)
 
     if _ci:

@@ -51,6 +51,14 @@ if not MONDAY_TOKEN or not EVOLCAMPUS_KEY or not EVOLCAMPUS_CLIENT_ID:
 MONDAY_BOARD_NAME    = "Encuestas: Cursos"
 
 CONFIG_FILE          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_config_cursos.json")
+# Board "Encuestas: Subvenciones RSK y AEHCOS" (5100940645) — clon estructural de Cursos.
+# Con --subvenciones el sync usa este config y procesa SOLO los grupos RSK/AEHCOS.
+SUBV_CONFIG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_config_subvenciones.json")
+
+# "No tocar Cursos aún": por defecto los grupos de subvención SIGUEN escribiéndose también
+# en el board Cursos (además del board nuevo → duplicación temporal aceptada). Cuando se
+# quiera limpiar, poner EXCLUDE_SUBV_FROM_CURSOS=1 y el sync de Cursos los omitirá.
+EXCLUDE_SUBV_FROM_CURSOS = os.environ.get("EXCLUDE_SUBV_FROM_CURSOS", "") in ("1", "true", "yes")
 
 # Palabras clave para detectar categoría de pregunta
 FORMADOR_KW  = ["formador", "ponente", "docente", "profesor", "tutor", "trainer"]
@@ -638,13 +646,14 @@ def monday_setup_board():
     return config
 
 
-def load_config():
+def load_config(path=None):
+    path = path or CONFIG_FILE
     try:
-        with open(CONFIG_FILE) as f:
+        with open(path) as f:
             return json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(
-            f"No se encontró {CONFIG_FILE}. Ejecuta primero: python3 evolcampus_monday_sync_cursos.py --setup"
+            f"No se encontró {path}. Ejecuta primero: python3 evolcampus_monday_sync_cursos.py --setup"
         )
 
 
@@ -851,6 +860,17 @@ def is_group_excluded(group_name):
     return any(k in gn for k in EXCLUDED_GROUP_KW)
 
 
+# Marcadores de subvención: código de curso tipo "(RSK046)"/"(RSKB23/00121)" o grupos
+# "SubvAehcos"/"..._RSKA23/..." → van al board "Subvenciones RSK y AEHCOS" (5100940645).
+_SUBV_MARKERS = ("rsk", "aehcos", "subv")
+
+def is_subvencion(course, group_name):
+    """True si el (curso, grupo) es una formación subvencionada RSK/AEHCOS.
+    Regla acordada: 'todo RSK/AEHCOS'. Substring case-insensitive sobre curso+grupo."""
+    hay = f"{course or ''} {group_name or ''}".lower()
+    return any(m in hay for m in _SUBV_MARKERS)
+
+
 def is_group_in_year(group_name, year):
     """Devuelve True si el grupo pertenece al año indicado."""
     return str(year) in group_name
@@ -905,19 +925,23 @@ def mode_explore():
         break
 
 
-def mode_sync(dry_run=False, year=None, filter_course=None, force=False):
+def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenciones=False):
     """Sincroniza cursos con Monday.
     Si year está definido, sincroniza todos los grupos de ese año (activos o no).
     Si no, solo sincroniza los grupos activos hoy.
     Si filter_course está definido, solo sincroniza grupos cuyo curso contenga ese texto.
     Si force=True, ignora el salto por fecha "sin cambios" y reprocesa todos los grupos
     (backfill: recoge respuestas tardías que no movieron la fecha máxima del programa).
+    Si subvenciones=True, escribe al board "Subvenciones RSK y AEHCOS" y procesa SOLO los
+    grupos RSK/AEHCOS. En la ejecución normal (Cursos), esos grupos se procesan igual que
+    hoy salvo que EXCLUDE_SUBV_FROM_CURSOS esté activo (entonces se omiten).
     """
+    tablero_label = "SUBVENCIONES" if subvenciones else "CURSOS"
     year_label = f" año {year}" if year else " (grupos activos)"
     filter_label = f" · filtro: '{filter_course}'" if filter_course else ""
-    print(f"\n── SYNC CURSOS{year_label}{filter_label} {'[DRY-RUN] ' if dry_run else ''}──────────────────────────────────")
+    print(f"\n── SYNC {tablero_label}{year_label}{filter_label} {'[DRY-RUN] ' if dry_run else ''}──────────────────────────────────")
 
-    config = load_config()
+    config = load_config(SUBV_CONFIG_FILE if subvenciones else CONFIG_FILE)
     board_id           = config["board_id"]
     group_programa_id  = config["group_programa_id"]
     group_modulo_id    = config["group_modulo_id"]
@@ -956,6 +980,20 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False):
         if is_course_excluded(course):
             skipped_course += 1
             continue
+
+        # Enrutado subvenciones RSK/AEHCOS ↔ board correcto.
+        _is_subv = is_subvencion(course, group_name)
+        if subvenciones:
+            # Ejecución al board Subvenciones: SOLO grupos RSK/AEHCOS.
+            if not _is_subv:
+                skipped_course += 1
+                continue
+        else:
+            # Ejecución al board Cursos: omitir subvención solo si se pide expresamente
+            # (EXCLUDE_SUBV_FROM_CURSOS). Por defecto se procesan igual que hoy.
+            if _is_subv and EXCLUDE_SUBV_FROM_CURSOS:
+                skipped_course += 1
+                continue
 
         # Filtro opcional por nombre de curso
         if filter_course and filter_course.lower() not in course.lower():
@@ -1343,6 +1381,8 @@ if __name__ == "__main__":
                         help="Sincronizar solo grupos cuyo curso contenga este texto. Ej: --filter-course 'LGTBI'")
     parser.add_argument("--force", action="store_true",
                         help="Ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos (backfill de respuestas tardías).")
+    parser.add_argument("--subvenciones", action="store_true",
+                        help="Sincroniza SOLO los grupos RSK/AEHCOS al board 'Subvenciones RSK y AEHCOS' (monday_config_subvenciones.json).")
     parser.add_argument("--export-excel", metavar="PATH",
                         help="Exporta encuestas a un Excel con la plantilla de Monday (NO escribe en Monday). Para subida manual.")
     parser.add_argument("--company", metavar="TEXTO",
@@ -1360,7 +1400,8 @@ if __name__ == "__main__":
     if args.setup:
         monday_setup_board()
     if args.sync:
-        mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course, force=args.force)
+        mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course,
+                  force=args.force, subvenciones=args.subvenciones)
     if args.export_excel:
         mode_export(args.export_excel, company=args.company, filter_course=args.filter_course,
                     year=args.year,

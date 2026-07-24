@@ -12,6 +12,7 @@ Uso:
   python3 link_encuestas_alumnos.py --dry-run    # Solo mostrar matches
   python3 link_encuestas_alumnos.py --board egh  # Solo board EGH
   python3 link_encuestas_alumnos.py --board cursos  # Solo board Cursos
+  python3 link_encuestas_alumnos.py --board subvenciones  # Solo board Subvenciones (5100940645)
   python3 link_encuestas_alumnos.py --force      # Sobrescribir valores existentes
 ─────────────────────────────────────────────────────────────────────────────
 """
@@ -40,6 +41,9 @@ ALUMNOS_BOARD    = 1388079440
 CUENTAS_BOARD    = 1368310907
 ENCUESTAS_CURSOS = 5094417029
 ENCUESTAS_EGH    = 5093144633
+# "Encuestas: Subvenciones RSK y AEHCOS" — clon estructural del board Cursos
+# (mismos IDs de grupo y de columna) → se procesa con las mismas constantes CURSOS_*.
+ENCUESTAS_SUBV   = 5100940645
 
 # Column IDs — Alumnos
 ALUMNOS_DNI_COL      = "texto24"                    # "Número documento"
@@ -287,8 +291,8 @@ def normalize_dni(dni_str):
 def main():
     parser = argparse.ArgumentParser(description="Vincula Alumno (rel) y Empresa en Encuestas por DNI")
     parser.add_argument("--dry-run", action="store_true", help="Solo mostrar matches sin escribir")
-    parser.add_argument("--board", choices=["cursos", "egh", "ambos"], default="ambos",
-                        help="Board(s) a procesar (default: ambos)")
+    parser.add_argument("--board", choices=["cursos", "egh", "subvenciones", "ambos"], default="ambos",
+                        help="Board(s) a procesar (default: ambos = egh + cursos + subvenciones)")
     parser.add_argument("--force", action="store_true",
                         help="Sobrescribir aunque ya tenga valor")
     args = parser.parse_args()
@@ -298,12 +302,15 @@ def main():
         print("⚠️  FORCE: se sobrescribirán valores existentes")
     print("=" * 70)
 
-    # ── Ruta optimizada para --board cursos ──────────────────────────────────
+    # ── Ruta optimizada para --board cursos / subvenciones ───────────────────
     # Procesa SOLO los ítems sin enlazar (no relee los dos boards enteros). Si el
     # filtrado server-side fallara por lo que sea, cae al método completo de abajo.
-    if args.board == "cursos" and not args.force:
+    # Subvenciones es un clon del board Cursos → misma ruta/columnas.
+    if args.board in ("cursos", "subvenciones") and not args.force:
+        _fast_board = ENCUESTAS_CURSOS if args.board == "cursos" else ENCUESTAS_SUBV
+        _fast_label = "Cursos" if args.board == "cursos" else "Subvenciones"
         try:
-            _process_cursos_fast(args)
+            _process_cursos_fast(args, board_id=_fast_board, board_label=_fast_label)
             return
         except Exception as e:
             print(f"⚠️  Ruta optimizada falló ({type(e).__name__}: {e}); uso método completo…")
@@ -340,21 +347,25 @@ def main():
     # ── 3. Procesar boards de Encuestas ──
     if args.board in ("cursos", "ambos"):
         _process_cursos(args, dni_to_alumno_id, dni_to_empresa)
+    if args.board in ("subvenciones", "ambos"):
+        _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
+                        board_id=ENCUESTAS_SUBV, board_label="Subvenciones")
     if args.board in ("egh", "ambos"):
         _process_egh(args, dni_to_empresa)
 
 
-def _process_cursos_fast(args):
-    """Ruta optimizada (solo --board cursos): procesa SOLO los ítems sin
+def _process_cursos_fast(args, board_id=ENCUESTAS_CURSOS, board_label="Cursos"):
+    """Ruta optimizada (--board cursos / subvenciones): procesa SOLO los ítems sin
     'Alumno (rel)' y consulta SOLO los Alumnos de esos DNIs. Evita releer los
     dos boards enteros cada noche (de ahí que tardara >1h). Si algo del filtrado
-    fallara, main() cae al método completo."""
+    fallara, main() cae al método completo. Subvenciones usa las MISMAS columnas
+    que Cursos (clon estructural) → mismo código, solo cambia el board_id."""
     print(f"\n{'─' * 70}")
-    print(f"📋 Encuestas: Cursos ({ENCUESTAS_CURSOS}) · solo ítems sin enlazar")
+    print(f"📋 Encuestas: {board_label} ({board_id}) · solo ítems sin enlazar")
 
-    # 1) Solo ítems de Cursos con "Alumno (rel)" vacío (filtro server-side).
+    # 1) Solo ítems con "Alumno (rel)" vacío (filtro server-side).
     rules = [{"column_id": CURSOS_RELATION_COL, "compare_value": [], "operator": "is_empty"}]
-    enc_items = fetch_all_items(ENCUESTAS_CURSOS,
+    enc_items = fetch_all_items(board_id,
                                 [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL],
                                 rules=rules)
     pend, no_dni, ya_rel = [], 0, 0
@@ -418,18 +429,21 @@ def _process_cursos_fast(args):
     # v60eu · Presupuesto de tiempo (env LINK_MAX_SECONDS, por defecto 3h) para no
     # agotar el límite de GitHub Actions con un backlog grande.
     _budget = int(os.environ.get("LINK_MAX_SECONDS", "10800"))
-    written = set_columns_batch(ENCUESTAS_CURSOS, updates, max_seconds=_budget)
+    written = set_columns_batch(board_id, updates, max_seconds=_budget)
     print(f"   ✅ Escritos {written}/{len(updates)} ítems (Alumno rel + Empresa)")
 
 
-def _process_cursos(args, dni_to_alumno_id, dni_to_empresa):
-    """Cursos: rellena Alumno (rel) + Empresa - dashboard."""
+def _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
+                    board_id=ENCUESTAS_CURSOS, board_label="Cursos"):
+    """Cursos / Subvenciones: rellena Alumno (rel) + Empresa - dashboard.
+    Subvenciones es un clon estructural de Cursos → mismas columnas, solo cambia
+    el board_id."""
     print(f"\n{'─' * 70}")
-    print(f"📋 Encuestas: Cursos ({ENCUESTAS_CURSOS})")
+    print(f"📋 Encuestas: {board_label} ({board_id})")
     print(f"   Columnas: Alumno (rel) [{CURSOS_RELATION_COL}] + Empresa [{CURSOS_EMPRESA_COL}]")
 
     cols = [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL]
-    enc_items = fetch_all_items(ENCUESTAS_CURSOS, cols)
+    enc_items = fetch_all_items(board_id, cols)
     print(f"   Total items: {len(enc_items)}")
 
     # Solo items de la sección "Por Encuesta" tienen alumno/DNI (los otros no tienen DNI)
@@ -488,7 +502,7 @@ def _process_cursos(args, dni_to_alumno_id, dni_to_empresa):
             elif total == 21:
                 print(f"   ...")
         else:
-            result = set_columns(ENCUESTAS_CURSOS, item["id"], col_values)
+            result = set_columns(board_id, item["id"], col_values)
             if result:
                 total = matched_rel + matched_emp
                 if total <= 20 or total % 200 == 0:
@@ -501,7 +515,7 @@ def _process_cursos(args, dni_to_alumno_id, dni_to_empresa):
                 print(f"   ⚠️  Error: {item['name'][:60]}")
             time.sleep(0.35)
 
-    print(f"\n   📊 RESUMEN Cursos {'(DRY RUN)' if args.dry_run else ''}:")
+    print(f"\n   📊 RESUMEN {board_label} {'(DRY RUN)' if args.dry_run else ''}:")
     print(f"      Items totales:          {len(enc_items)}")
     print(f"      Sin DNI (prog/módulo):  {no_dni}")
     print(f"      DNI no encontrado:      {not_found}")

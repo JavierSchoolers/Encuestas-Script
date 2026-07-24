@@ -54,6 +54,9 @@ ENCUESTAS_CURSOS    = 5094417029
 CURSOS_DNI_COL      = "text_mm2fhjgw"
 CURSOS_EMPRESA_COL  = "text_mm2fc06a"   # "Empresa - dashboard" (texto)
 
+# "Encuestas: Subvenciones RSK y AEHCOS" — clon estructural de Cursos → mismas columnas.
+ENCUESTAS_SUBV      = 5100940645
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MONDAY API HELPERS
@@ -342,7 +345,7 @@ def main():
         description="Rellena Empresa-dashboard desde Matrículas → Sociedades → Marca"
     )
     parser.add_argument("--dry-run", action="store_true", help="Solo mostrar sin escribir")
-    parser.add_argument("--board", choices=["egh", "cursos", "ambos"], default="ambos")
+    parser.add_argument("--board", choices=["egh", "cursos", "subvenciones", "ambos"], default="ambos")
     parser.add_argument("--force", action="store_true",
                         help="Sobrescribir valores existentes")
     args = parser.parse_args()
@@ -365,6 +368,14 @@ def main():
     if args.board in ("cursos", "ambos"):
         process_encuestas_board(
             "Encuestas: Cursos", ENCUESTAS_CURSOS,
+            CURSOS_DNI_COL, CURSOS_EMPRESA_COL,
+            dni_to_marca, dry_run=args.dry_run, force=args.force
+        )
+
+    if args.board in ("subvenciones", "ambos"):
+        # Subvenciones = clon de Cursos (mismas columnas DNI/empresa).
+        process_encuestas_board(
+            "Encuestas: Subvenciones", ENCUESTAS_SUBV,
             CURSOS_DNI_COL, CURSOS_EMPRESA_COL,
             dni_to_marca, dry_run=args.dry_run, force=args.force
         )
