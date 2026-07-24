@@ -14,10 +14,14 @@ import urllib.request
 # Mismos pasos que .github/workflows/sync-encuestas.yml (en orden).
 STEPS = [
     (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync"], {"SKIP_DASHBOARD_REGEN": "1"}),
+    # 1b · Subvenciones RSK/AEHCOS → board 5100940645 (solo grupos RSK/AEHCOS).
+    (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--subvenciones"], {"SKIP_DASHBOARD_REGEN": "1"}),
     (["python", "scripts/evolcampus_monday_sync.py", "--sync"], {}),
     # 2b · backfill automático LGTBI
     (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--force", "--filter-course", "LGTBI"], {"SKIP_DASHBOARD_REGEN": "1"}),
     (["python", "scripts/link_encuestas_alumnos.py", "--board", "cursos"], {}),
+    # 3b · Enlazar Alumno (rel) + Empresa en el board Subvenciones (clon de Cursos).
+    (["python", "scripts/link_encuestas_alumnos.py", "--board", "subvenciones"], {}),
     (["python", "scripts/link_marca_matriculas.py"], {}),
     (["python", "scripts/sync_mirror_empresa.py"], {}),
 ]
