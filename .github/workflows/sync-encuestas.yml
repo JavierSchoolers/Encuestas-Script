@@ -1,8 +1,10 @@
 # .github/workflows/sync-encuestas.yml
 # Sincroniza EvolCampus → Monday todos los días (objetivo: 00:30 hora de España).
-# Ejecuta DOS syncs (cada uno a su board) + asignación de empresa + refresco:
-#   1) evolcampus_monday_sync_cursos.py --sync  → board Cursos  (5094417029)
-#   2) evolcampus_monday_sync.py        --sync  → board EGH     (5093144633)
+# Ejecuta TRES syncs (cada uno a su board) + asignación de empresa + refresco:
+#   1)  evolcampus_monday_sync_cursos.py --sync                 → board Cursos  (5094417029)
+#   1b) evolcampus_monday_sync_cursos.py --sync --subvenciones  → board Subvenciones (5100940645)
+#       (solo grupos RSK/AEHCOS; hoy NO se excluyen de Cursos → duplicación temporal)
+#   2)  evolcampus_monday_sync.py        --sync                 → board EGH     (5093144633)
 #      (su sync interno lanza link_encuestas_alumnos SOLO con --board egh).
 #   3) link_encuestas_alumnos.py --board cursos → "Alumno (rel)" + "Empresa -
 #      dashboard" en el board Cursos (el paso 2 no lo hace). "Cuenta empresa" es un
@@ -64,6 +66,18 @@ jobs:
           SKIP_DASHBOARD_REGEN: '1'   # en CI el JSON lo reconstruye Netlify (paso 3)
         run: python scripts/evolcampus_monday_sync_cursos.py --sync ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
 
+      # Subvenciones RSK/AEHCOS → board 5100940645 (mismo script, --subvenciones).
+      # Procesa SOLO los grupos RSK/AEHCOS. Por defecto NO se excluyen de Cursos
+      # (EXCLUDE_SUBV_FROM_CURSOS sin definir) → duplicación temporal aceptada.
+      - name: 1b) Sync SUBVENCIONES (RSK/AEHCOS) → board 5100940645
+        if: ${{ inputs.solo_tracking != true }}
+        env:
+          MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
+          EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
+          EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
+          SKIP_DASHBOARD_REGEN: '1'
+        run: python scripts/evolcampus_monday_sync_cursos.py --sync --subvenciones ${{ inputs.force && '--force' || '' }} ${{ inputs.course && format('--filter-course "{0}"', inputs.course) || '' }}
+
       - name: 2) Sync EGH → board 5093144633 (su sync interno enlaza SOLO el board EGH)
         if: ${{ inputs.solo_tracking != true }}
         env:
@@ -81,6 +95,13 @@ jobs:
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_encuestas_alumnos.py --board cursos
+
+      # Mismo enlace para el board Subvenciones (clon de Cursos).
+      - name: 3b) Enlazar Alumno (rel) + Empresa en board SUBVENCIONES (DNI → Alumnos)
+        if: ${{ inputs.solo_tracking != true }}
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+        run: python scripts/link_encuestas_alumnos.py --board subvenciones
 
       - name: 4) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
         if: ${{ inputs.solo_tracking != true }}
