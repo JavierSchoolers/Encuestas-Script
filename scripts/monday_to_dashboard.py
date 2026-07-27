@@ -1124,6 +1124,9 @@ if __name__ == "__main__":
                         help="Sincronizar comentarios nuevos al board de gestión de comentarios")
     parser.add_argument("--tracking-board", default=TRACKING_BOARD_ID,
                         help=f"ID del board de tracking (por defecto: {TRACKING_BOARD_ID})")
+    parser.add_argument("--no-subvenciones", action="store_true",
+                        help="Fallback: NO leer el board de Subvenciones (5100940645); solo EGH + Cursos. "
+                             "Útil mientras se está editando ese tablero.")
     args = parser.parse_args()
 
     print(f"\n── MONDAY → DASHBOARD ─────────────────────────────────────")
@@ -1136,9 +1139,13 @@ if __name__ == "__main__":
     cursos_items = fetch_all_items(CURSOS_BOARD_ID)
     print(f"  ✓ {len(cursos_items)} ítems obtenidos")
 
-    print(f"[1c] Leyendo ítems del board Subvenciones ({SUBV_BOARD_ID})...")
-    subv_items = fetch_all_items(SUBV_BOARD_ID)
-    print(f"  ✓ {len(subv_items)} ítems obtenidos")
+    if args.no_subvenciones:
+        subv_items = []
+        print(f"[1c] Subvenciones ({SUBV_BOARD_ID}) OMITIDO (--no-subvenciones)")
+    else:
+        print(f"[1c] Leyendo ítems del board Subvenciones ({SUBV_BOARD_ID})...")
+        subv_items = fetch_all_items(SUBV_BOARD_ID)
+        print(f"  ✓ {len(subv_items)} ítems obtenidos")
 
     # v60cj · En CI (GitHub Actions) SKIP_DASHBOARD_REGEN=1 → solo sincronizar el
     # board de tracking. El JSON del dashboard lo reconstruye Netlify, y la
