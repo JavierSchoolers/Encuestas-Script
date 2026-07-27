@@ -14,6 +14,11 @@
 #   6) monday_to_dashboard.py --sync-tracking → comentarios (sentimiento/acción) al
 #      board "Gestión de comentarios" (5094293806), upsert idempotente.
 #   7) POST a Netlify para reconstruir el JSON de encuestas que lee el dashboard.
+#
+# OPCIÓN "skip_subvenciones" (workflow_dispatch): actualiza SOLO EGH + Programas Schoolers
+# (Cursos) SIN tocar el board de Subvenciones (5100940645). Salta 1b y 3b, corre 4/5 solo
+# para egh+cursos, pasa --no-subvenciones al paso 6 y ?skip=subvenciones al refresco (7).
+# Útil para relanzar el sync de los otros dos tableros mientras se edita el de subvenciones.
 
 name: Sync encuestas EvolCampus → Monday
 
@@ -34,6 +39,10 @@ on:
         default: ''
       solo_tracking:
         description: 'Solo paso 6: sincronizar comentarios al board Gestión de comentarios (salta los syncs y el enlazado).'
+        type: boolean
+        default: false
+      skip_subvenciones:
+        description: 'Saltar el board de Subvenciones (5100940645): actualizar SOLO EGH + Programas Schoolers. Útil mientras se edita ese tablero.'
         type: boolean
         default: false
 
@@ -70,7 +79,7 @@ jobs:
       # Procesa SOLO los grupos RSK/AEHCOS. Por defecto NO se excluyen de Cursos
       # (EXCLUDE_SUBV_FROM_CURSOS sin definir) → duplicación temporal aceptada.
       - name: 1b) Sync SUBVENCIONES (RSK/AEHCOS) → board 5100940645
-        if: ${{ inputs.solo_tracking != true }}
+        if: ${{ inputs.solo_tracking != true && inputs.skip_subvenciones != true }}
         env:
           MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
           EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
@@ -98,22 +107,36 @@ jobs:
 
       # Mismo enlace para el board Subvenciones (clon de Cursos).
       - name: 3b) Enlazar Alumno (rel) + Empresa en board SUBVENCIONES (DNI → Alumnos)
-        if: ${{ inputs.solo_tracking != true }}
+        if: ${{ inputs.solo_tracking != true && inputs.skip_subvenciones != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_encuestas_alumnos.py --board subvenciones
 
+      # Si skip_subvenciones: correr solo egh + cursos (dos llamadas) para NO tocar el
+      # board de Subvenciones. Si no: "ambos" (default) incluye los tres.
       - name: 4) Asignar empresa por Marca real (Matrículas → boards de Encuestas)
         if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
-        run: python scripts/link_marca_matriculas.py
+        run: |
+          if [ "${{ inputs.skip_subvenciones }}" = "true" ]; then
+            python scripts/link_marca_matriculas.py --board egh
+            python scripts/link_marca_matriculas.py --board cursos
+          else
+            python scripts/link_marca_matriculas.py
+          fi
 
       - name: 5) Sincronizar 'Cuenta empresa' (espejo Alumnos → columna de texto)
         if: ${{ inputs.solo_tracking != true }}
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
-        run: python scripts/sync_mirror_empresa.py
+        run: |
+          if [ "${{ inputs.skip_subvenciones }}" = "true" ]; then
+            python scripts/sync_mirror_empresa.py --board egh
+            python scripts/sync_mirror_empresa.py --board cursos
+          else
+            python scripts/sync_mirror_empresa.py
+          fi
 
       # Comentarios → board "Gestión de comentarios" (5094293806): lee "Por Encuesta"
       # de EGH+Cursos, calcula sentimiento/acción y hace UPSERT idempotente (por
@@ -124,9 +147,13 @@ jobs:
         env:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
           SKIP_DASHBOARD_REGEN: '1'
-        run: python scripts/monday_to_dashboard.py --sync-tracking
+        run: python scripts/monday_to_dashboard.py --sync-tracking ${{ inputs.skip_subvenciones && '--no-subvenciones' || '' }}
 
       - name: 7) Refrescar el dashboard (reconstruir encuestas en Netlify)
         if: always()   # refresca aunque algún paso haya fallado: sube lo que sí se escribió
         run: |
-          curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
+          if [ "${{ inputs.skip_subvenciones }}" = "true" ]; then
+            curl -fsS -X POST "https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background?skip=subvenciones" || true
+          else
+            curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
+          fi
