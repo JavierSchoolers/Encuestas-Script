@@ -993,13 +993,25 @@ def _identity_hash(curso, grupo, modulo, alumno):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+# Grupos que NO se sincronizan al board "Gestión de comentarios": los de subvención/FEHM
+# (su grupo contiene "RSK" y/o "FEHM"). Están también en el board Cursos ("Programas
+# Schôolers") pero no se gestionan por esta vía y disparan el timeout del paso 6 por volumen.
+_EXCLUDED_GROUP_TOKENS = ("RSK", "FEHM")
+
+def _group_is_excluded(group):
+    g = (group or "").upper()
+    return any(tok in g for tok in _EXCLUDED_GROUP_TOKENS)
+
+
 def build_tracking_source_from_items(items, cursos_items=None, subv_items=None):
     """Construye el origen de datos para el tracking board leyendo directamente
     de los ítems 'Por Encuesta' de EGH, Cursos y Subvenciones, sin pasar por el
     dashboard JSON. Devuelve un dict compatible con sync_comments_to_tracking_board."""
     mod_comments = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    _skipped = 0
 
     def _process(enc_items, col):
+        nonlocal _skipped
         for item in enc_items:
             cvm    = _cv_map(item)
             parts  = item["name"].split(" — ", 3)
@@ -1007,6 +1019,10 @@ def build_tracking_source_from_items(items, cursos_items=None, subv_items=None):
             group  = parts[1].strip() if len(parts) > 1 else ""
             module = col_text(cvm, col["modulo"]) or (parts[2].strip() if len(parts) > 2 else "")
             if not course or not module:
+                continue
+            # Saltar grupos RSK/FEHM (subvención/FEHM) → no van al board de comentarios.
+            if _group_is_excluded(group):
+                _skipped += 1
                 continue
             for c in col_comments(cvm, col["comentarios"]):
                 if not c.get("text"):
@@ -1036,6 +1052,8 @@ def build_tracking_source_from_items(items, cursos_items=None, subv_items=None):
                 activities.append({"module": module, "comments": comments, "last_date": last_display})
             courses_out[course][group] = {"activities": activities}
 
+    if _skipped:
+        print(f"  ↷ {_skipped} ítem(s) de grupos RSK/FEHM omitidos del board de comentarios")
     return {"courses": courses_out}
 
 
