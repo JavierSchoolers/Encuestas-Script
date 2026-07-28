@@ -11,21 +11,38 @@ import sys
 import subprocess
 import urllib.request
 
-# Mismos pasos que .github/workflows/sync-encuestas.yml (en orden).
+# Igual que el workflow de GitHub: por defecto SOLO EGH + Programas (Cursos). El board de
+# Subvenciones (5100940645) se incluye solo si SYNC_SUBVENCIONES=1 (env). Así, cada noche se
+# actualizan los alumnos actuales y las subvenciones se lanzan cuando estén preparadas.
+_SUBV = os.environ.get("SYNC_SUBVENCIONES", "") in ("1", "true", "yes")
+
 STEPS = [
     (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync"], {"SKIP_DASHBOARD_REGEN": "1"}),
+]
+if _SUBV:
     # 1b · Subvenciones RSK/AEHCOS → board 5100940645 (solo grupos RSK/AEHCOS).
-    (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--subvenciones"], {"SKIP_DASHBOARD_REGEN": "1"}),
+    STEPS.append((["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--subvenciones"], {"SKIP_DASHBOARD_REGEN": "1"}))
+STEPS += [
     (["python", "scripts/evolcampus_monday_sync.py", "--sync"], {}),
     # 2b · backfill automático LGTBI
     (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--force", "--filter-course", "LGTBI"], {"SKIP_DASHBOARD_REGEN": "1"}),
     (["python", "scripts/link_encuestas_alumnos.py", "--board", "cursos"], {}),
-    # 3b · Enlazar Alumno (rel) + Empresa en el board Subvenciones (clon de Cursos).
-    (["python", "scripts/link_encuestas_alumnos.py", "--board", "subvenciones"], {}),
-    (["python", "scripts/link_marca_matriculas.py"], {}),
-    (["python", "scripts/sync_mirror_empresa.py"], {}),
 ]
-REFRESH_URL = "https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background"
+if _SUBV:
+    # 3b · Enlazar Alumno (rel) + Empresa en el board Subvenciones (clon de Cursos).
+    STEPS.append((["python", "scripts/link_encuestas_alumnos.py", "--board", "subvenciones"], {}))
+if _SUBV:
+    STEPS.append((["python", "scripts/link_marca_matriculas.py"], {}))
+    STEPS.append((["python", "scripts/sync_mirror_empresa.py"], {}))
+else:
+    # Solo EGH + Cursos (no tocar el board de subvenciones).
+    STEPS.append((["python", "scripts/link_marca_matriculas.py", "--board", "egh"], {}))
+    STEPS.append((["python", "scripts/link_marca_matriculas.py", "--board", "cursos"], {}))
+    STEPS.append((["python", "scripts/sync_mirror_empresa.py", "--board", "egh"], {}))
+    STEPS.append((["python", "scripts/sync_mirror_empresa.py", "--board", "cursos"], {}))
+
+REFRESH_URL = ("https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background"
+               + ("" if _SUBV else "?skip=subvenciones"))
 
 
 def main():

@@ -63,8 +63,28 @@ EGH_EMPRESA_COL      = "text_mm2fka7y"    # "Cuenta empresa" (texto)
 # MONDAY API HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def monday_query(query, variables=None, retries=3):
-    """Ejecuta una query GraphQL contra Monday.com con retry logic."""
+def _rate_wait_from_errors(data):
+    """Si el 'errors' del body es de rate-limit / complejidad, devuelve los segundos a
+    esperar (usa retry_in_seconds de Monday si viene); si no lo es, None."""
+    try:
+        for e in (data.get("errors") or []):
+            blob = (str(e.get("message", "")) + " " + str(e.get("extensions", {}))).lower()
+            if any(k in blob for k in ("complexity", "rate limit", "minute", "budget", "too many")):
+                ri = (e.get("extensions", {}) or {}).get("retry_in_seconds")
+                return int(ri) if ri else 20
+        top = (str(data.get("error_code", "")) + " " + str(data.get("error_message", ""))).lower()
+        if any(k in top for k in ("complexity", "rate", "minute", "budget")):
+            return int(data.get("retry_in_seconds") or 20)
+    except Exception:
+        pass
+    return None
+
+
+def monday_query(query, variables=None, retries=6):
+    """Ejecuta una query/mutación GraphQL contra Monday con retry logic.
+    v60fp · Honra el rate-limit real de Monday (cabecera Retry-After en 429 y
+    retry_in_seconds en errores de complejidad) en vez de esperar fijo 15/30/45 s, y
+    sube los reintentos (6) para que los lotes de escritura no caigan a 1×1."""
     headers = {
         "Authorization": MONDAY_TOKEN,
         "Content-Type": "application/json",
@@ -75,19 +95,37 @@ def monday_query(query, variables=None, retries=3):
         payload["variables"] = variables
 
     for attempt in range(retries):
+        last = attempt == retries - 1
         try:
             resp = requests.post(MONDAY_API, json=payload, headers=headers, timeout=60)
+
+            # 429 → esperar lo que diga Monday (Retry-After), no un fijo largo.
+            if resp.status_code == 429 and not last:
+                ra = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                wait = int(ra) if (ra and str(ra).isdigit()) else 12
+                wait = min(max(wait, 3), 65) + 1
+                print(f"  ⚠️  HTTP 429 (rate limit), espero {wait}s… ({attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+
             resp.raise_for_status()
             data = resp.json()
 
             if "errors" in data:
+                rw = _rate_wait_from_errors(data)
+                if rw is not None and not last:
+                    rw = min(max(rw, 3), 65) + 1
+                    print(f"  ⚠️  Límite de complejidad, espero {rw}s… ({attempt+1}/{retries})")
+                    time.sleep(rw)
+                    continue
                 print(f"  ⚠️  GraphQL errors: {data['errors']}")
                 return None
             return data.get("data")
         except requests.exceptions.HTTPError as e:
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
-                wait = (attempt + 1) * 15
-                print(f"  ⚠️  HTTP {resp.status_code}, reintentando en {wait}s... ({attempt+1}/{retries})")
+            sc = getattr(resp, "status_code", None)
+            if sc in (500, 502, 503, 504) and not last:
+                wait = min((attempt + 1) * 10, 45)
+                print(f"  ⚠️  HTTP {sc}, reintento en {wait}s… ({attempt+1}/{retries})")
                 time.sleep(wait)
             else:
                 print(f"  ❌ HTTP error: {e}")
@@ -95,9 +133,9 @@ def monday_query(query, variables=None, retries=3):
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError,
                 requests.exceptions.ReadTimeout, requests.exceptions.Timeout,
                 requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError) as e:
-            if attempt < retries - 1:
+            if not last:
                 wait = (attempt + 1) * 8
-                print(f"  ⚠️  Error de conexión, reintentando en {wait}s... ({attempt+1}/{retries})")
+                print(f"  ⚠️  Error de conexión, reintento en {wait}s… ({attempt+1}/{retries})")
                 time.sleep(wait)
             else:
                 print(f"  ❌ Error de conexión tras {retries} intentos: {e}")

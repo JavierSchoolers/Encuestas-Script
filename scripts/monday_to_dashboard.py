@@ -441,7 +441,27 @@ def egh_parte_from_module(module_name, course_name):
 # MONDAY API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def monday_query(query, variables=None, retries=4):
+def _transient_body_wait(errs):
+    """v60fs · Si el error que Monday devuelve en el BODY es TRANSITORIO (Internal Server
+    Error, complejidad, rate-limit, timeout), devuelve los segundos a esperar; si no lo es,
+    None (para lanzar y abortar). Antes cualquier error del body abortaba a la primera, y un
+    500 interno intermitente de Monday en boards grandes (Cursos ~18k) tiraba todo el build."""
+    try:
+        for e in (errs or []):
+            ext = e.get("extensions", {}) or {}
+            code = str(ext.get("code", "")).upper()
+            msg = (str(e.get("message", "")) + " " + str(ext)).lower()
+            if code in ("INTERNAL_SERVER_ERROR", "COMPLEXITY_BUDGET_EXHAUSTED") or any(
+                    k in msg for k in ("internal server error", "complexity", "rate limit",
+                                       "timeout", "temporarily", "502", "503", "504", "500")):
+                ri = ext.get("retry_in_seconds")
+                return int(ri) if ri else 20
+    except Exception:
+        pass
+    return None
+
+
+def monday_query(query, variables=None, retries=6):
     headers = {
         "Authorization": MONDAY_TOKEN,
         "Content-Type":  "application/json",
@@ -450,27 +470,35 @@ def monday_query(query, variables=None, retries=4):
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    # Reintentos ante timeouts / cortes de red / 429-5xx (los boards son grandes).
+    # Reintentos ante timeouts / cortes de red / 429-5xx Y errores transitorios del body
+    # (los boards son grandes y Monday devuelve 500 interno de forma intermitente).
     for attempt in range(retries):
+        last = attempt == retries - 1
         try:
             resp = requests.post(MONDAY_API, headers=headers, json=payload, timeout=90)
             resp.raise_for_status()
             data = resp.json()
             if "errors" in data:
+                w = _transient_body_wait(data["errors"])
+                if w is not None and not last:
+                    w = min(max(w, 3), 75)
+                    print(f"  ⚠️  Monday error transitorio, reintento en {w}s... ({attempt+1}/{retries}): {str(data['errors'])[:160]}")
+                    time.sleep(w)
+                    continue
                 raise ValueError(f"Monday API error: {data['errors']}")
             return data.get("data", {})
         except requests.exceptions.HTTPError as e:
             sc = getattr(e.response, "status_code", None)
-            if sc in (429, 500, 502, 503, 504) and attempt < retries - 1:
-                wait = (attempt + 1) * 15
+            if sc in (429, 500, 502, 503, 504) and not last:
+                wait = min((attempt + 1) * 15, 60)
                 print(f"  ⚠️  HTTP {sc}, reintentando en {wait}s... ({attempt+1}/{retries})")
                 time.sleep(wait)
             else:
                 raise
         except requests.exceptions.RequestException as e:
             # Timeout, ConnectionError, ChunkedEncodingError, ProtocolError… → transitorios
-            if attempt < retries - 1:
-                wait = (attempt + 1) * 15
+            if not last:
+                wait = min((attempt + 1) * 15, 60)
                 print(f"  ⚠️  Red ({type(e).__name__}), reintentando en {wait}s... ({attempt+1}/{retries})")
                 time.sleep(wait)
             else:
@@ -483,7 +511,7 @@ def fetch_all_items(board_id):
     q_first = """
     query($board_id: ID!) {
       boards(ids: [$board_id]) {
-        items_page(limit: 500) {
+        items_page(limit: 250) {
           cursor
           items {
             id name
@@ -502,7 +530,7 @@ def fetch_all_items(board_id):
     # Páginas siguientes
     q_next = """
     query($cursor: String!) {
-      next_items_page(limit: 500, cursor: $cursor) {
+      next_items_page(limit: 250, cursor: $cursor) {
         cursor
         items {
           id name
@@ -519,6 +547,49 @@ def fetch_all_items(board_id):
         cursor    = page.get("cursor")
         print(f"  ...{len(all_items)} ítems cargados")
 
+    return all_items
+
+
+def fetch_enc_items(board_id, group_id, col_ids):
+    """v60ft · Lectura LIGERA para --sync-tracking: pagina SOLO el grupo 'Por Encuesta'
+    del board y lee ÚNICAMENTE las columnas necesarias (módulo + comentarios), en vez de
+    los ~18k ítems de Cursos con TODAS las columnas (que tardaba >20 min y daba Internal
+    Server Error). El tracking de comentarios solo usa esos ítems y esas columnas."""
+    ids_str = ", ".join('"%s"' % c for c in col_ids if c)
+    col_fragment = ("column_values(ids: [%s]) { id text value }" % ids_str) if ids_str else "column_values { id text value }"
+    q_first = """
+    query($board_id: ID!, $group_id: [String!]) {
+      boards(ids: [$board_id]) {
+        groups(ids: $group_id) {
+          items_page(limit: 250) {
+            cursor
+            items { id name group { id } %s }
+          }
+        }
+      }
+    }
+    """ % col_fragment
+    data = monday_query(q_first, {"board_id": board_id, "group_id": [group_id]})
+    boards = data.get("boards") or [{}]
+    groups = boards[0].get("groups") or [{}]
+    page = groups[0].get("items_page", {}) if groups else {}
+    all_items = list(page.get("items", []))
+    cursor = page.get("cursor")
+    q_next = """
+    query($cursor: String!) {
+      next_items_page(limit: 250, cursor: $cursor) {
+        cursor
+        items { id name group { id } %s }
+      }
+    }
+    """ % col_fragment
+    while cursor:
+        data = monday_query(q_next, {"cursor": cursor})
+        page = data.get("next_items_page", {})
+        items = page.get("items", [])
+        all_items.extend(items)
+        cursor = page.get("cursor")
+        print(f"  ...{len(all_items)} ítems (Por Encuesta) cargados")
     return all_items
 
 
@@ -1131,26 +1202,44 @@ if __name__ == "__main__":
 
     print(f"\n── MONDAY → DASHBOARD ─────────────────────────────────────")
 
-    print(f"[1] Leyendo ítems del board EGH/CSUL ({BOARD_ID})...")
-    items = fetch_all_items(BOARD_ID)
-    print(f"  ✓ {len(items)} ítems obtenidos")
-
-    print(f"[1b] Leyendo ítems del board Cursos ({CURSOS_BOARD_ID})...")
-    cursos_items = fetch_all_items(CURSOS_BOARD_ID)
-    print(f"  ✓ {len(cursos_items)} ítems obtenidos")
-
-    if args.no_subvenciones:
-        subv_items = []
-        print(f"[1c] Subvenciones ({SUBV_BOARD_ID}) OMITIDO (--no-subvenciones)")
-    else:
-        print(f"[1c] Leyendo ítems del board Subvenciones ({SUBV_BOARD_ID})...")
-        subv_items = fetch_all_items(SUBV_BOARD_ID)
-        print(f"  ✓ {len(subv_items)} ítems obtenidos")
-
     # v60cj · En CI (GitHub Actions) SKIP_DASHBOARD_REGEN=1 → solo sincronizar el
     # board de tracking. El JSON del dashboard lo reconstruye Netlify, y la
     # inyección en HTML locales no aplica en CI.
     _ci = os.environ.get("SKIP_DASHBOARD_REGEN", "") in ("1", "true", "yes")
+
+    # v60ft · Si SOLO vamos a sincronizar el tracking (CI), basta con leer el grupo
+    # "Por Encuesta" y las columnas de comentarios → mucho más rápido y sin reventar el
+    # board grande de Cursos. Para el build completo del dashboard sí se lee todo.
+    _tracking_only = _ci and args.sync_tracking
+
+    if _tracking_only:
+        print(f"[1] Leyendo 'Por Encuesta' de EGH ({BOARD_ID}) [ligero]...")
+        items = fetch_enc_items(BOARD_ID, GROUP_ENC_EGH_ID, [COL["modulo"], COL["comentarios"]])
+        print(f"  ✓ {len(items)} ítems")
+        print(f"[1b] Leyendo 'Por Encuesta' de Cursos ({CURSOS_BOARD_ID}) [ligero]...")
+        cursos_items = fetch_enc_items(CURSOS_BOARD_ID, CURSOS_GROUP_ENC_ID, [COL_CURSOS["modulo"], COL_CURSOS["comentarios"]])
+        print(f"  ✓ {len(cursos_items)} ítems")
+        # Los comentarios de Subvención NO se vinculan al board de gestión de comentarios
+        # (solo aparecen en el tablero de encuestas Subvenciones). En modo tracking-only (CI)
+        # subv_items no se usa para nada → ni siquiera lo leemos.
+        subv_items = []
+        print(f"[1c] Subvenciones ({SUBV_BOARD_ID}) OMITIDO (no se sincroniza al board de comentarios)")
+    else:
+        print(f"[1] Leyendo ítems del board EGH/CSUL ({BOARD_ID})...")
+        items = fetch_all_items(BOARD_ID)
+        print(f"  ✓ {len(items)} ítems obtenidos")
+
+        print(f"[1b] Leyendo ítems del board Cursos ({CURSOS_BOARD_ID})...")
+        cursos_items = fetch_all_items(CURSOS_BOARD_ID)
+        print(f"  ✓ {len(cursos_items)} ítems obtenidos")
+
+        if args.no_subvenciones:
+            subv_items = []
+            print(f"[1c] Subvenciones ({SUBV_BOARD_ID}) OMITIDO (--no-subvenciones)")
+        else:
+            print(f"[1c] Leyendo ítems del board Subvenciones ({SUBV_BOARD_ID})...")
+            subv_items = fetch_all_items(SUBV_BOARD_ID)
+            print(f"  ✓ {len(subv_items)} ítems obtenidos")
 
     data = None
     if not _ci:
@@ -1173,7 +1262,10 @@ if __name__ == "__main__":
 
     if args.sync_tracking:
         print(f"\n[·] Sincronizando comentarios al board de tracking...")
-        tracking_source = build_tracking_source_from_items(items, cursos_items, subv_items)
+        # Los comentarios de SUBVENCIÓN NO se vinculan al board "Gestión de comentarios":
+        # solo deben aparecer en el tablero de encuestas Subvenciones. Por eso NO se pasa
+        # subv_items aquí (aunque se hayan leído para el build del dashboard JSON local).
+        tracking_source = build_tracking_source_from_items(items, cursos_items)
         sync_comments_to_tracking_board(tracking_source, args.tracking_board)
 
     if _ci:
