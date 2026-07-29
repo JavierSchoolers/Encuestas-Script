@@ -122,6 +122,17 @@ jobs:
           MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
         run: python scripts/link_encuestas_alumnos.py --board subvenciones
 
+      # Vincular cada encuesta con su MATRÍCULA por DNI + Grupo EvolCampus (rellena los
+      # mirrors "Cuenta" e "ID_Evolcampus" de la encuesta). Alcance actual: Cursos + EGH.
+      # Necesita EvolCampus (getCoursesGroups) para traducir nombre de grupo → group_id.
+      - name: 3c) Enlazar Encuestas → Matrícula (DNI + Grupo EvolCampus) · Cursos + EGH
+        if: ${{ inputs.solo_tracking != true && (inputs.subvenciones == 'no' || inputs.subvenciones == 'incluir') }}
+        env:
+          MONDAY_TOKEN:         ${{ secrets.MONDAY_TOKEN }}
+          EVOLCAMPUS_KEY:       ${{ secrets.EVOLCAMPUS_KEY }}
+          EVOLCAMPUS_CLIENT_ID: ${{ secrets.EVOLCAMPUS_CLIENT_ID }}
+        run: python scripts/link_matriculas_encuestas.py --board ambos
+
       # Empresa por Marca. Según el modo 'subvenciones':
       #   no      → solo egh + cursos (no toca subvenciones)
       #   incluir → los tres (--board ambos)
