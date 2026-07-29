@@ -27,6 +27,9 @@ STEPS += [
     # 2b · backfill automático LGTBI
     (["python", "scripts/evolcampus_monday_sync_cursos.py", "--sync", "--force", "--filter-course", "LGTBI"], {"SKIP_DASHBOARD_REGEN": "1"}),
     (["python", "scripts/link_encuestas_alumnos.py", "--board", "cursos"], {}),
+    # Vincula cada encuesta con su MATRÍCULA por DNI + Grupo EvolCampus (rellena los
+    # mirrors Cuenta e ID_Evolcampus). Alcance actual: Cursos + EGH.
+    (["python", "scripts/link_matriculas_encuestas.py", "--board", "ambos"], {}),
 ]
 if _SUBV:
     # 3b · Enlazar Alumno (rel) + Empresa en el board Subvenciones (clon de Cursos).
