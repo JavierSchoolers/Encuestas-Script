@@ -370,6 +370,7 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
 
     module_rows    = []
     individual_rows = []
+    _ID_ENROLL_STATS = {"n": 0, "ok": 0}   # v60gz · diagnóstico cobertura id_enroll
 
     for survey in surveys:
         # Ignorar encuestas FUNDAE (administrativas)
@@ -421,6 +422,10 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
         for record in records:
             student   = record.get("name") or "Anónimo"
             student_dni = record.get("id_card") or ""
+            # id de matrícula de EvolCampus (record.id_enroll) → columna ID_Evolcampus.
+            # "anonymous" (encuestas anónimas) se descarta.
+            _ide = record.get("id_enroll")
+            rec_id_enroll = "" if (_ide is None or str(_ide).strip().lower() == "anonymous") else str(_ide).strip()
             questions = record.get("questions", [])
             has_answer = False
 
@@ -512,7 +517,7 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
                 mod_n_responses += 1
                 program_n_responses.add(student)
                 # Construir fila individual
-                mod_individual_rows.append({
+                _ir = {
                     "curso":          course_name,
                     "grupo":          group_name,
                     "modulo":         module_name,
@@ -526,7 +531,14 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
                     "comentarios":    json.dumps([{"text": c, "student": student, "date": rec_last_date.strftime("%Y-%m-%d") if rec_last_date else ""} for c in rec_comments], ensure_ascii=False) if rec_comments else "",
                     "fecha_ultima":   rec_last_date.strftime("%Y-%m-%d") if rec_last_date else "",
                     "fecha_encuesta": rec_last_date.strftime("%Y-%m-%d") if rec_last_date else "",
-                })
+                }
+                # v60gz · Solo escribir ID_Evolcampus si viene con valor. NUNCA vacío
+                # (no borrar el que ya hubiera). Contador para diagnóstico.
+                _ID_ENROLL_STATS["n"] += 1
+                if rec_id_enroll:
+                    _ir["id_evolcampus"] = rec_id_enroll
+                    _ID_ENROLL_STATS["ok"] += 1
+                mod_individual_rows.append(_ir)
 
         # Fallback de fecha: si un record no tiene fecha, usar mod_last_date o survey_date
         _fecha_fallback = (
@@ -604,6 +616,8 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
         "fecha_fin":      end_date,
     }
 
+    if _ID_ENROLL_STATS["n"]:
+        print(f"     [id_enroll] {group_name}: {_ID_ENROLL_STATS['ok']}/{_ID_ENROLL_STATS['n']} filas con id de matrícula", flush=True)
     return program_row, module_rows, individual_rows
 
 

@@ -294,6 +294,7 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
 
     module_rows     = []
     individual_rows = []
+    _ID_ENROLL_STATS = {"n": 0, "ok": 0}   # v60gz · diagnóstico cobertura id_enroll
 
     for survey in surveys:
         if survey.get("type", "").lower() == "fundae":
@@ -338,6 +339,11 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         for record in records:
             student   = record.get("name") or "Anónimo"
             student_dni = record.get("id_card") or ""
+            # id de matrícula de EvolCampus (getSurveysByGroup → record.id_enroll) → se
+            # escribe en la columna ID_Evolcampus del board de encuestas. "anonymous"
+            # (encuestas anónimas) se descarta para no romper el cruce.
+            _ide = record.get("id_enroll")
+            rec_id_enroll = "" if (_ide is None or str(_ide).strip().lower() == "anonymous") else str(_ide).strip()
             # Export filtrado por empresa: saltar alumnos que no pertenecen a la marca.
             if allowed_dnis is not None:
                 _dnin = re.sub(r'[^0-9A-Za-z]', '', str(student_dni)).upper()
@@ -450,6 +456,13 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
                 for i, fname in enumerate(rec_formadores_ord[:6], 1):
                     rec_row[f"formador_{i}"]     = fname
                     rec_row[f"pct_formador_{i}"] = to_pct(rec_formador_scores[fname])
+                # v60gz · Solo escribir ID_Evolcampus si viene con valor. NUNCA escribir
+                # vacío: si EvolCampus no manda id_enroll en esta pasada, dejar el que ya
+                # hubiera (no borrarlo). Contador para diagnóstico.
+                _ID_ENROLL_STATS["n"] += 1
+                if rec_id_enroll:
+                    rec_row["id_evolcampus"] = rec_id_enroll
+                    _ID_ENROLL_STATS["ok"] += 1
                 mod_individual_rows.append(rec_row)
 
         _fecha_fallback = mod_last_date or survey_date
@@ -517,6 +530,8 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         "fecha_fin":       end_date,
     }
 
+    if _ID_ENROLL_STATS["n"]:
+        print(f"     [id_enroll] {group_name}: {_ID_ENROLL_STATS['ok']}/{_ID_ENROLL_STATS['n']} filas con id de matrícula", flush=True)
     return program_row, module_rows, individual_rows
 
 
