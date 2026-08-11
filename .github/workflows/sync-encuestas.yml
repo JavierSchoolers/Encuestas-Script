@@ -175,8 +175,11 @@ jobs:
       - name: 7) Refrescar el dashboard (reconstruir encuestas en Netlify)
         if: always()   # refresca aunque algún paso haya fallado: sube lo que sí se escribió
         run: |
-          if [ "${{ inputs.subvenciones }}" = "no" ]; then
-            curl -fsS -X POST "https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background?skip=subvenciones" || true
-          else
-            curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background || true
+          # Disparadores MANUALES (background puro, invocables por HTTP). OJO: NO usar
+          # monday-encuestas-build-background → es SCHEDULED (cron 4h) y Netlify no permite
+          # invocar scheduled por HTTP → devolvía 403 y el refresco no ocurría.
+          # rebuild = EGH + Cursos (blob encuestas-data). subv-build = Subvenciones (blob aparte).
+          curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-rebuild-background || true
+          if [ "${{ inputs.subvenciones }}" != "no" ]; then
+            curl -fsS -X POST https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-subv-build-background || true
           fi
