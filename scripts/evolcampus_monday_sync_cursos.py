@@ -90,6 +90,20 @@ EXCLUDED_GROUP_KW = [
     "grupo abierto", "abierto 2025", "abierta 2025",
 ]
 
+# ── Grupos SIN FECHA en el nombre que SÍ deben sincronizarse ─────────────────
+# is_group_active descarta los grupos cuyo nombre no trae fecha parseable
+# (conservador: evita resucitar grupos viejos/demo cada noche). Los clientes
+# cuyos grupos se nombran SIN fecha (p. ej. "Juaneda Hospitales - Formación
+# PRL personal sanitario…") se declaran aquí por palabra clave (substring,
+# case-insensitive, sobre CURSO + GRUPO). Los grupos sin fecha que NO estén
+# aquí se saltan igual que antes, pero ahora dejan un aviso en el log del
+# nocturno para que el próximo caso no muera en silencio.
+# 2026-08-14: añadido "juaneda" (encuestas cargadas inicialmente a mano con
+# script; a partir de ahora el nocturno las mantiene al día).
+NO_DATE_ACTIVE_KW = [
+    "juaneda",
+]
+
 # ── Encuestas excluidas (por nombre de survey, parcial, case-insensitive) ────
 # Se tratan aparte; no deben entrar en el dashboard de módulos
 EXCLUDED_SURVEY_NAMES = [
@@ -243,30 +257,37 @@ def val_to_pct(val, scale):
 
 
 def parse_group_dates(group_name):
+    """Extrae (start, end) de un nombre de grupo.
+    Reconoce un rango "DD/MM al DD/MM" y, si no lo hay, una única fecha de inicio
+    "DD/MM" (grupos mal nombrados sin fecha de fin). Si el nombre no trae año de 4
+    cifras, se asume el año actual."""
     start_date = ""
     end_date = ""
+    year_match = re.search(r'(\d{4})', group_name)
+    year = year_match.group(1) if year_match else str(datetime.now().year)
+
+    def _to_iso(raw):
+        parts = raw.split("/")
+        if len(parts) == 2:
+            d, mo, y = parts[0], parts[1], year
+        else:
+            d, mo, y = parts
+            if len(y) == 2:
+                y = "20" + y
+        try:
+            return datetime(int(y), int(mo), int(d)).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            return ""
+
     m = re.search(r'(\d{1,2}/\d{2}(?:/\d{4})?)\s*(?:al?|-)\s*(\d{1,2}/\d{2}(?:/\d{4})?)', group_name)
     if m:
-        raw_start, raw_end = m.group(1), m.group(2)
-        year_match = re.search(r'(\d{4})', group_name)
-        year = year_match.group(1) if year_match else str(datetime.now().year)
-        for raw, target in [(raw_start, "start"), (raw_end, "end")]:
-            parts = raw.split("/")
-            if len(parts) == 2:
-                d, mo = parts
-                y = year
-            else:
-                d, mo, y = parts
-                if len(y) == 2:
-                    y = "20" + y
-            try:
-                dt = datetime(int(y), int(mo), int(d))
-                if target == "start":
-                    start_date = dt.strftime("%Y-%m-%d")
-                else:
-                    end_date = dt.strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                pass
+        start_date = _to_iso(m.group(1))
+        end_date   = _to_iso(m.group(2))
+    else:
+        # Sin rango: intentar una única fecha de inicio (grupos sin "al <fin>").
+        m1 = re.search(r'(\d{1,2}/\d{2}(?:/\d{4})?)', group_name)
+        if m1:
+            start_date = _to_iso(m1.group(1))
     return start_date, end_date
 
 
@@ -891,53 +912,110 @@ def is_group_in_year(group_name, year):
     return str(year) in group_name
 
 
-def is_group_active(group_name):
+# Ventana (días desde el inicio) para considerar activo un grupo cuyo nombre NO trae
+# fecha de fin. Cubre programas largos (~8 meses) sin resucitar grupos antiguos.
+GROUP_ACTIVE_MAX_DAYS = 240
+
+
+def is_group_active(group_name, course=""):
     """Comprueba si un grupo está activo hoy: ya ha empezado Y aún no ha terminado.
     Si no hay año en el nombre, parse_group_dates asigna el año actual.
     Exigir start_date <= hoy evita activar grupos sin año cuyo inicio en el año
-    actual es futuro (ej. grupos de 2024 cuya fecha, asignada a 2026, aún no ha llegado)."""
+    actual es futuro (ej. grupos de 2024 cuya fecha, asignada a 2026, aún no ha llegado).
+
+    Si el nombre NO trae fecha de fin (grupo mal nombrado, p. ej. "…- 13/07"), NO se
+    descarta por eso: si tiene una fecha de inicio ya empezada y reciente (dentro de
+    GROUP_ACTIVE_MAX_DAYS), se trata como activo para no perder sus encuestas.
+
+    2026-08-14 · Grupos SIN NINGUNA fecha en el nombre (p. ej. Juaneda, cuyo grupo
+    se llama igual que el curso): se activan solo si curso/grupo casan con
+    NO_DATE_ACTIVE_KW; el resto se sigue saltando (conservador) pero dejando un
+    aviso en el log para detectar el próximo cliente con grupos sin fecha."""
     start_date, end_date = parse_group_dates(group_name)
-    if not end_date:
-        return False
-    # Rechazar grupos anteriores a 2025 (año extraído de la fecha parseada)
-    if end_date[:4] < "2025":
-        return False
     today = datetime.now().strftime("%Y-%m-%d")
-    # El grupo debe haber empezado ya (o no tener fecha de inicio)
-    if start_date and start_date > today:
-        return False
-    return end_date >= today
+
+    if end_date:
+        # Rechazar grupos anteriores a 2025 (año extraído de la fecha parseada)
+        if end_date[:4] < "2025":
+            return False
+        # El grupo debe haber empezado ya (o no tener fecha de inicio)
+        if start_date and start_date > today:
+            return False
+        return end_date >= today
+
+    # Sin fecha de fin en el nombre: no descartar solo por eso.
+    if start_date:
+        if start_date[:4] < "2025":
+            return False
+        if start_date > today:        # inicio futuro → aún no activo
+            return False
+        try:
+            dias = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d")).days
+        except ValueError:
+            return False
+        return dias <= GROUP_ACTIVE_MAX_DAYS
+
+    # Ni inicio ni fin parseables: activar SOLO si está declarado (lista blanca).
+    hay = f"{course or ''} {group_name or ''}".lower()
+    if any(k in hay for k in NO_DATE_ACTIVE_KW):
+        return True
+    print(f"  ⏭ Grupo SIN fecha en el nombre → saltado: {course or '?'} / {group_name} "
+          f"(si debe sincronizarse, añadir palabra clave a NO_DATE_ACTIVE_KW)")
+    return False
 
 
-def mode_explore():
-    """Muestra la estructura de datos de un grupo (solo lectura)."""
+def mode_explore(filter_course=None):
+    """Muestra la estructura de datos de los grupos (solo lectura).
+    Si filter_course está definido, solo explora los grupos cuyo curso contenga ese texto.
+    Guarda la respuesta cruda de cada grupo explorado en explore_cursos_output.json."""
     print("\n── EXPLORACIÓN ──────────────────────────────────────────")
     all_groups = get_all_groups()
-    targets = [g for g in all_groups if is_course_allowed(g["course"])]
+    targets = [g for g in all_groups if not is_course_excluded(g["course"])]
+    if filter_course:
+        targets = [g for g in targets if filter_course.lower() in g["course"].lower()]
+        print(f"  filtro de curso: '{filter_course}'")
 
     if not targets:
-        print("  No se encontraron grupos para los cursos permitidos.")
+        print("  No se encontraron grupos para los cursos indicados.")
         return
 
     print(f"  {len(targets)} grupos encontrados")
     for g in targets:
         print(f"  - {g['course']} / {g['group_name']} (ID: {g['group_id']})")
 
+    dump = {}
     for g in targets:
         raw = get_surveys_by_group(g["group_id"])
         if raw is None:
+            print(f"\n  Explorando: {g['course']} / {g['group_name']} → sin respuesta de la API")
             continue
-        print(f"\n  Explorando: {g['course']} / {g['group_name']}")
-        with open("explore_cursos_output.json", "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2, ensure_ascii=False)
-        print(f"  ✓ Guardado en explore_cursos_output.json")
-        grp = raw.get("group", raw)
-        for i, s in enumerate(grp.get("surveys", [])[:15]):
+        key = f"{g['course']} / {g['group_name']} ({g['group_id']})"
+        dump[key] = raw
+        print(f"\n  Explorando: {key}")
+        # La API a veces devuelve dict {"group": {...}} y a veces una lista de surveys.
+        if isinstance(raw, dict):
+            grp = raw.get("group", raw)
+            surveys = grp.get("surveys", []) if isinstance(grp, dict) else []
+        elif isinstance(raw, list):
+            surveys = raw
+        else:
+            surveys = []
+        if not surveys:
+            print("    (0 surveys en la respuesta)")
+        for i, s in enumerate(surveys[:15]):
             stype = s.get("type", "?")
             subject = s.get("subject", "—sin subject—")
             recs = len(s.get("records", []))
             print(f"    [{i}] type={stype:8s} subject=\"{subject}\" records={recs}")
-        break
+
+    if filter_course:
+        _safe = "".join(c if c.isalnum() else "_" for c in filter_course)[:40]
+        out_name = f"explore_cursos_{_safe}.json"
+    else:
+        out_name = "explore_cursos_output.json"
+    with open(out_name, "w", encoding="utf-8") as f:
+        json.dump(dump, f, indent=2, ensure_ascii=False)
+    print(f"\n  ✓ Guardado {len(dump)} grupo(s) en {out_name}")
 
 
 def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenciones=False):
@@ -1024,7 +1102,7 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
             if not is_group_in_year(group_name, year):
                 continue
         else:
-            if not is_group_active(group_name):
+            if not is_group_active(group_name, course):
                 continue
 
         course_clean = course.strip()
@@ -1411,7 +1489,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args.explore:
-        mode_explore()
+        mode_explore(filter_course=args.filter_course)
     if args.setup:
         monday_setup_board()
     if args.sync:

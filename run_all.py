@@ -44,8 +44,13 @@ else:
     STEPS.append((["python", "scripts/sync_mirror_empresa.py", "--board", "egh"], {}))
     STEPS.append((["python", "scripts/sync_mirror_empresa.py", "--board", "cursos"], {}))
 
-REFRESH_URL = ("https://rrhh.schoolers.io/.netlify/functions/monday-encuestas-build-background"
-               + ("" if _SUBV else "?skip=subvenciones"))
+# Disparadores MANUALES (background puro, invocables por HTTP). OJO: NO usar
+# monday-encuestas-build-background → es SCHEDULED (cron 4h) y Netlify no permite invocar
+# scheduled por HTTP → devolvía 403 y el refresco no ocurría.
+_NF = "https://rrhh.schoolers.io/.netlify/functions/"
+REFRESH_URLS = [_NF + "monday-encuestas-rebuild-background"]   # EGH + Cursos (blob encuestas-data)
+if _SUBV:
+    REFRESH_URLS.append(_NF + "monday-encuestas-subv-build-background")   # Subvenciones (blob aparte)
 
 
 def main():
@@ -59,11 +64,13 @@ def main():
             print(f"   ⚠️  terminó con código {r.returncode} (se continúa)", flush=True)
 
     # Paso 6 · refrescar el dashboard (siempre, aunque algún paso haya fallado)
-    try:
-        urllib.request.urlopen(urllib.request.Request(REFRESH_URL, method="POST"), timeout=30)
-        print(">> refresco Netlify OK", flush=True)
-    except Exception as e:
-        print(f"   ⚠️  refresco Netlify: {e}", flush=True)
+    for _url in REFRESH_URLS:
+        _fn = _url.rsplit("/", 1)[-1]
+        try:
+            urllib.request.urlopen(urllib.request.Request(_url, method="POST"), timeout=30)
+            print(f">> refresco Netlify OK: {_fn}", flush=True)
+        except Exception as e:
+            print(f"   ⚠️  refresco Netlify ({_fn}): {e}", flush=True)
 
     if failed:
         print("FALLARON pasos: " + " | ".join(failed), flush=True)
