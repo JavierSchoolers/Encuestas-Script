@@ -800,6 +800,11 @@ def monday_upsert_item(board_id, group_id, item_name, col_ids, row, dry_run=Fals
     add("modulo",        row.get("modulo", ""))
     add("alumno",        row.get("alumno", ""))
     add("dni",           row.get("dni", ""))
+    # 2026-08-14 · FIX: el sync capturaba id_enroll (rec_row["id_evolcampus"], v60gx)
+    # pero el upsert NUNCA lo escribia en Monday (faltaba este add) -> el nocturno
+    # no rellenaba la columna ID_Evolcampus. Sin default "": solo se escribe si la
+    # fila lo trae (nunca pisa un id existente con vacio, requisito v60gx).
+    add("id_evolcampus", row.get("id_evolcampus"))
     add("formador",      row.get("formador", ""))
     add("pct_global",    row.get("pct_global"))
     add("respuestas",    row.get("respuestas"))
