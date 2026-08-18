@@ -156,7 +156,13 @@ def fetch_all_items(board_id, columns_ids, rules=None, need_value=True):
     """Obtiene items de un board con paginación por cursor.
     - rules: filtro server-side (query_params) → trae solo los que cumplen.
     - need_value=False: omite el campo 'value' (lectura más ligera / menos rate-limit)."""
-    cv_fields = "id text value" if need_value else "id text"
+    # 2026-08-18 · Se pide SIEMPRE el campo tipado de board_relation. Bajo
+    # API-Version 2024-10 el `value` de una board_relation no trae linkedPulseIds,
+    # así que is_relation_set() daba False para TODAS las filas y el linker
+    # reescribía la relación de 18.141 encuestas cada noche ("Ya con relación: 0"
+    # con el board entero ya enlazado). Con linked_item_ids la guarda funciona.
+    _rel = " ... on BoardRelationValue { linked_item_ids }"
+    cv_fields = ("id text value" if need_value else "id text") + _rel
     qp = _rules_to_gql(rules) if rules else ""
     all_items = []
     cursor = None
@@ -300,15 +306,24 @@ def set_columns_batch(board_id, updates, batch_size=15, max_seconds=None):
 
 
 def is_relation_set(item, col_id):
-    """Devuelve True si la columna board_relation ya tiene un item vinculado."""
+    """Devuelve True si la columna board_relation ya tiene un item vinculado.
+
+    2026-08-18 · Prioriza `linked_item_ids` (campo tipado de BoardRelationValue).
+    Bajo API-Version 2024-10 el `value` NO trae linkedPulseIds, así que el parseo
+    del JSON devolvía False siempre → el linker reescribía todo el board cada
+    noche. Se mantiene el parseo de `value` como respaldo (y se aceptan las dos
+    grafías de la clave) para no depender de una sola vía."""
     for cv in item.get("column_values", []):
         if cv["id"] == col_id:
+            lids = cv.get("linked_item_ids")
+            if isinstance(lids, list) and len(lids) > 0:
+                return True
             val = cv.get("value")
             if not val:
-                return False
+                return bool(lids)
             try:
                 parsed = json.loads(val)
-                linked = parsed.get("linkedPulseIds", [])
+                linked = parsed.get("linkedPulseIds") or parsed.get("linked_pulse_ids") or []
                 return len(linked) > 0
             except Exception:
                 return False

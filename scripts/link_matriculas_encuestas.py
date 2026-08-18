@@ -59,6 +59,7 @@ MAT_SUBV   = "5030543348"
 # Columnas de MATRÍCULAS (mismas en ambos boards):
 MAT_DNI_COL   = "lookup4"        # "Nº documento" (mirror)
 MAT_GRUPO_COL = "reflejo_1__1"   # "Grupo Evolcampus" (mirror → group_id numérico)
+MAT_EV_COL    = "texto_1__1"     # "ID_Evolcampus" (texto) → cruce de respaldo (2026-08-18)
 
 # Config por board de Encuestas: DNI, Grupo (nombre), relación a matrícula, y a qué
 # boards de matrículas puede apuntar esa relación.
@@ -69,6 +70,7 @@ ENC_BOARDS = {
         "dni_col":   "text_mm2fhjgw",
         "grupo_col": "text_mm29712e",
         "rel_col":   "board_relation_mm5p6dmp",
+        "id_col":    "text_mm5zhsjr",   # ID_Evolcampus de la encuesta (respaldo)
         "mat_boards": [MAT_FUNDAE, MAT_SUBV],
     },
     "egh": {
@@ -77,6 +79,7 @@ ENC_BOARDS = {
         "dni_col":   "text_mm2fq73j",
         "grupo_col": "text_mm1d5xhk",
         "rel_col":   "board_relation_mm5pgak4",
+        "id_col":    "text_mm5zpvyz",   # ID_Evolcampus de la encuesta (respaldo)
         "mat_boards": [MAT_FUNDAE],
     },
 }
@@ -140,14 +143,25 @@ def build_matricula_index(mat_board_ids):
     {(normDNI, group_id): matricula_item_id}. Una matrícula puede listar varios group_id
     (se indexa cada uno). Colisiones (mismo DNI+grupo en 2 matrículas) → se queda la 1ª."""
     idx = {}
+    idx_ev = {}        # 2026-08-18 · ID_Evolcampus → matrícula (cruce de respaldo)
+    ev_ambiguos = set()  # el mismo ev en 2 matrículas → NO enlazar (evita cruzar personas)
     collisions = 0
-    cols = json.dumps([MAT_DNI_COL, MAT_GRUPO_COL])
-    frag = ('column_values(ids: ' + cols + ') { id ... on MirrorValue { display_value } }')
+    cols = json.dumps([MAT_DNI_COL, MAT_GRUPO_COL, MAT_EV_COL])
+    frag = ('column_values(ids: ' + cols + ') { id text ... on MirrorValue { display_value } }')
 
     def _process(board_id, items):
         nonlocal collisions
         for it in items:
-            vals = {cv["id"]: (cv.get("display_value") or "") for cv in it.get("column_values", [])}
+            vals = {cv["id"]: (cv.get("display_value") or cv.get("text") or "")
+                    for cv in it.get("column_values", [])}
+            # Índice por ID_Evolcampus (independiente del DNI: sirve aunque el
+            # espejo "Grupo Evolcampus" esté vacío, caso Juaneda).
+            _ev = str(vals.get(MAT_EV_COL, "") or "").strip()
+            if _ev and _ev != "null":
+                if _ev in idx_ev and idx_ev[_ev] != it["id"]:
+                    ev_ambiguos.add(_ev)
+                else:
+                    idx_ev[_ev] = it["id"]
             dni = normalize_dni(vals.get(MAT_DNI_COL, ""))
             if not dni:
                 continue
@@ -179,8 +193,11 @@ def build_matricula_index(mat_board_ids):
                 _process(board_id, np.get("items", [])); n += len(np.get("items", []))
                 cursor = np.get("cursor")
         print(f"   Matrículas board {board_id}: {n} items leídos")
+    for _a in ev_ambiguos:
+        idx_ev.pop(_a, None)
     print(f"   Índice (DNI+grupo) → matrícula: {len(idx)} claves · colisiones DNI+grupo ignoradas: {collisions}")
-    return idx
+    print(f"   Índice (ID_Evolcampus) → matrícula: {len(idx_ev)} claves · ev ambiguos descartados: {len(ev_ambiguos)}")
+    return idx, idx_ev
 
 
 # ── Proceso por board de Encuestas ────────────────────────────────────────────
@@ -194,15 +211,18 @@ def process_board(cfg, name_to_gid, args):
     print(f"\n{'─' * 70}")
     print(f"📋 Encuestas: {label} ({board_id}) · relación [{rel_col}] → matrículas {cfg['mat_boards']}")
 
-    mat_idx = build_matricula_index(cfg["mat_boards"])
+    mat_idx, mat_idx_ev = build_matricula_index(cfg["mat_boards"])
 
     # NOTA: no usamos el filtro server-side is_empty sobre board_relation: en API
     # 2024-10 no filtra (devuelve el board entero). Leemos todo y filtramos en cliente.
-    enc_items = fetch_all_items(board_id, [dni_col, grp_col, rel_col])
+    id_col = cfg.get("id_col")
+    _cols = [dni_col, grp_col, rel_col] + ([id_col] if id_col else [])
+    enc_items = fetch_all_items(board_id, _cols)
     print(f"   Encuestas leídas: {len(enc_items)}")
 
     updates = []
     no_dni = no_grupo = grp_no_gid = not_found = already = 0
+    por_ev = 0   # 2026-08-18 · enlazadas por el respaldo de ID_Evolcampus
     for item in enc_items:
         dni = normalize_dni(get_column_value(item, dni_col))
         if not dni:
@@ -211,18 +231,38 @@ def process_board(cfg, name_to_gid, args):
         if is_relation_set(item, rel_col) and not args.force:
             already += 1
             continue
+        # 2026-08-18 · Respaldo por ID_Evolcampus. El cruce principal exige el espejo
+        # "Grupo Evolcampus" de la matrícula, que en algunos clientes está VACÍO
+        # (Juaneda: sus 11 encuestas no se enlazaban nunca y caían en "DNI+grupo sin
+        # matrícula"). Si la encuesta trae ID_Evolcampus y ese ID identifica UNA sola
+        # matrícula, el cruce es 1:1 y no necesita ni grupo ni DNI.
+        def _mid_por_ev():
+            if not id_col:
+                return None
+            ev = str(get_column_value(item, id_col) or "").strip()
+            if not ev or ev == "null":
+                return None
+            for part in re.split(r"[,;]+", ev):
+                m = mat_idx_ev.get(part.strip())
+                if m:
+                    return m
+            return None
+
         gname = _norm_group(get_column_value(item, grp_col))
-        if not gname:
-            no_grupo += 1
-            continue
-        gid = name_to_gid.get(gname)
-        if not gid:
-            grp_no_gid += 1        # nombre de grupo no está (o es ambiguo) en EvolCampus
-            continue
-        mid = mat_idx.get((dni, gid))
+        gid = name_to_gid.get(gname) if gname else None
+        mid = mat_idx.get((dni, gid)) if gid else None
         if not mid:
-            not_found += 1         # no hay matrícula con ese DNI+grupo
-            continue
+            mid = _mid_por_ev()
+            if mid:
+                por_ev += 1
+            else:
+                if not gname:
+                    no_grupo += 1
+                elif not gid:
+                    grp_no_gid += 1    # nombre de grupo no está (o es ambiguo) en EvolCampus
+                else:
+                    not_found += 1     # no hay matrícula con ese DNI+grupo ni por ID
+                continue
         updates.append((item["id"], {rel_col: {"item_ids": [int(mid)]}}))
 
     print(f"\n   📊 {label} {'(DRY RUN)' if args.dry_run else ''}:")
@@ -231,6 +271,7 @@ def process_board(cfg, name_to_gid, args):
     print(f"      Sin grupo:                 {no_grupo}")
     print(f"      Grupo sin group_id:        {grp_no_gid}")
     print(f"      DNI+grupo sin matrícula:   {not_found}")
+    print(f"      (de las vinculables, por ID_Evolcampus: {por_ev})")
     print(f"      A vincular:                {len(updates)}")
 
     if args.dry_run:
