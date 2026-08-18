@@ -103,6 +103,27 @@ EXCLUDED_GROUP_KW = [
 NO_DATE_ACTIVE_KW = [
     "juaneda",
 ]
+# 2026-08-18 · La lista pasa a ser AUTORITATIVA (antes solo se consultaba cuando el
+# nombre del grupo no traía NINGUNA fecha parseable). Motivo: los tres cursos de
+# Juaneda deberían sincronizarse y solo lo hacían dos ("con radiaciones" y "no
+# sanitario"); "sanitario sin radiaciones" no llegaba nunca al board de encuestas
+# aunque sus alumnos tienen progreso real (90,91% · 27,27% · 9,09%). Si el nombre
+# de ese grupo trae algo que parse_group_dates interpreta como fecha (año < 2025,
+# inicio futuro, o más de GROUP_ACTIVE_MAX_DAYS), is_group_active devolvía False
+# en la rama de fechas y NO llegaba a mirar esta lista. Ahora se consulta primero.
+ALWAYS_ACTIVE_KW = NO_DATE_ACTIVE_KW
+
+
+def _is_always_active(course="", group_name=""):
+    hay = f"{course or ''} {group_name or ''}".lower()
+    return any(k in hay for k in ALWAYS_ACTIVE_KW)
+
+
+def _traza(course, group_name, msg):
+    """Log dirigido: solo escribe para los clientes de ALWAYS_ACTIVE_KW, para poder
+    seguir en el log del nocturno qué pasa con ellos sin ensuciar el resto."""
+    if _is_always_active(course, group_name):
+        print(f"  [traza] {course or '?'} / {group_name or '?'} → {msg}")
 
 # ── Encuestas excluidas (por nombre de survey, parcial, case-insensitive) ────
 # Se tratan aparte; no deben entrar en el dashboard de módulos
@@ -324,6 +345,8 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         # Excluir encuestas de programa global (se tratan aparte)
         _sname = (survey.get("name") or "").strip().lower()
         if any(kw in _sname for kw in EXCLUDED_SURVEY_NAMES):
+            _traza(course_name, group_name, f"encuesta DESCARTADA por EXCLUDED_SURVEY_NAMES: "
+                                       f"\"{(survey.get('name') or '').strip()}\"")
             continue
 
         # Detectar escala de esta encuesta (4 o 5) antes de procesar
@@ -936,6 +959,11 @@ def is_group_active(group_name, course=""):
     se llama igual que el curso): se activan solo si curso/grupo casan con
     NO_DATE_ACTIVE_KW; el resto se sigue saltando (conservador) pero dejando un
     aviso en el log para detectar el próximo cliente con grupos sin fecha."""
+    # 2026-08-18 · Lista blanca AUTORITATIVA: si el curso/grupo está declarado,
+    # es activo pase lo que pase con las fechas del nombre.
+    if _is_always_active(course, group_name):
+        return True
+
     start_date, end_date = parse_group_dates(group_name)
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -1076,6 +1104,7 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
 
         # Filtro de curso
         if is_course_excluded(course):
+            _traza(course, group_name, "SALTADO por EXCLUDED_COURSES")
             skipped_course += 1
             continue
 
@@ -1099,6 +1128,7 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
 
         # Filtro de grupo: matrícula abierta, etc.
         if is_group_excluded(group_name):
+            _traza(course, group_name, "SALTADO por EXCLUDED_GROUP_KW (matrícula abierta, etc.)")
             skipped_group += 1
             continue
 
@@ -1108,6 +1138,8 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
                 continue
         else:
             if not is_group_active(group_name, course):
+                _traza(course, group_name,
+                       f"SALTADO por is_group_active (fechas parseadas: {parse_group_dates(group_name)})")
                 continue
 
         course_clean = course.strip()
