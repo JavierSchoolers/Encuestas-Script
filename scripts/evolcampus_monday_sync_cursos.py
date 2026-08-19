@@ -125,6 +125,22 @@ def _traza(course, group_name, msg):
     if _is_always_active(course, group_name):
         print(f"  [traza] {course or '?'} / {group_name or '?'} → {msg}")
 
+# ── Cursos que NO deben sufrir la exclusión por nombre de encuesta ───────────
+# 2026-08-18 · EXCLUDED_SURVEY_NAMES existe para que las encuestas GLOBALES de
+# programa no se cuenten como módulo (duplicarían la nota en programas que ya
+# tienen una encuesta por módulo). Pero hay clientes cuya ÚNICA encuesta de
+# satisfacción es precisamente esa: Juaneda usa "¿Qué te ha parecido el curso?",
+# que casa con la entrada "ha parecido el curso" y se tiraba a la basura DESPUÉS
+# de haberla descargado bien de EvolCampus. Aquí se declaran (substring sobre
+# curso + grupo) los que sí deben pasar.
+# Cada entrada es un PAR (palabra del curso/grupo, palabra del nombre de la encuesta):
+# la excepción se aplica SOLO a esa encuesta y SOLO en ese curso. Cualquier otra
+# encuesta excluida sigue excluida ahí, y esa encuesta sigue excluida en el resto
+# de clientes.
+SURVEY_EXCL_BYPASS = [
+    ("juaneda", "ha parecido el curso"),   # "¿Qué te ha parecido el curso?" de Juaneda PRL
+]
+
 # ── Encuestas excluidas (por nombre de survey, parcial, case-insensitive) ────
 # Se tratan aparte; no deben entrar en el dashboard de módulos
 EXCLUDED_SURVEY_NAMES = [
@@ -345,9 +361,16 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         # Excluir encuestas de programa global (se tratan aparte)
         _sname = (survey.get("name") or "").strip().lower()
         if any(kw in _sname for kw in EXCLUDED_SURVEY_NAMES):
-            _traza(course_name, group_name, f"encuesta DESCARTADA por EXCLUDED_SURVEY_NAMES: "
-                                       f"\"{(survey.get('name') or '').strip()}\"")
-            continue
+            _hay = f"{course_name or ''} {group_name or ''}".lower()
+            if any(_ck in _hay and _sk in _sname for _ck, _sk in SURVEY_EXCL_BYPASS):
+                # Curso declarado en SURVEY_EXCL_BYPASS_KW: su encuesta global ES la
+                # encuesta de satisfacción, así que se procesa como un módulo más.
+                _traza(course_name, group_name, f"encuesta ACEPTADA por SURVEY_EXCL_BYPASS: "
+                                                f"\"{(survey.get('name') or '').strip()}\"")
+            else:
+                _traza(course_name, group_name, f"encuesta DESCARTADA por EXCLUDED_SURVEY_NAMES: "
+                                           f"\"{(survey.get('name') or '').strip()}\"")
+                continue
 
         # Detectar escala de esta encuesta (4 o 5) antes de procesar
         survey_scale = detect_survey_scale(survey)
