@@ -19,10 +19,10 @@ import requests
 import json
 import sys
 import os
+import time
 import subprocess
 import argparse
 import re
-import time
 from datetime import datetime
 
 
@@ -30,16 +30,35 @@ from datetime import datetime
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
 
-EVOLCAMPUS_CLIENT_ID = "21675"
-EVOLCAMPUS_KEY       = "GN9ENpyEc8R3uRK"
+# Credenciales: SIEMPRE desde variables de entorno / GitHub Secrets (nunca en código).
+EVOLCAMPUS_CLIENT_ID = os.environ.get("EVOLCAMPUS_CLIENT_ID", "")
+EVOLCAMPUS_KEY       = os.environ.get("EVOLCAMPUS_KEY", "")
 EVOLCAMPUS_API       = "https://api.evolcampus.com/api/v1"
 
-MONDAY_TOKEN         = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYzMjc2MjI4NSwiYWFpIjoxMSwidWlkIjo1NTE4OTUyNiwiaWFkIjoiMjAyNi0wMy0xM1QxMjoyMTo1Mi41OTJaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjA3OTgxMDcsInJnbiI6ImV1YzEifQ.-jfooP2syn5emD9lS-QIx24vgcrIEFitgzPoP-BVma0"
+MONDAY_TOKEN         = os.environ.get("MONDAY_TOKEN", "")
 MONDAY_API           = "https://api.monday.com/v2"
+
+# Aviso temprano si faltan credenciales (evita escrituras silenciosas con token vacío).
+if not MONDAY_TOKEN or not EVOLCAMPUS_KEY or not EVOLCAMPUS_CLIENT_ID:
+    import sys as _sys
+    _faltan = [n for n, v in (("MONDAY_TOKEN", MONDAY_TOKEN),
+                              ("EVOLCAMPUS_KEY", EVOLCAMPUS_KEY),
+                              ("EVOLCAMPUS_CLIENT_ID", EVOLCAMPUS_CLIENT_ID)) if not v]
+    print(f"✗ Faltan variables de entorno: {', '.join(_faltan)}. "
+          f"Configúralas como Secrets del repo (Settings → Secrets and variables → Actions).",
+          file=_sys.stderr)
+    _sys.exit(2)
 MONDAY_BOARD_NAME    = "Encuestas: Cursos"
 
 CONFIG_FILE          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_config_cursos.json")
-CONFIG_FILE_RSK      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_config_rsk.json")
+# Board "Encuestas: Subvenciones RSK y AEHCOS" (5100940645) — clon estructural de Cursos.
+# Con --subvenciones el sync usa este config y procesa SOLO los grupos RSK/AEHCOS.
+SUBV_CONFIG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_config_subvenciones.json")
+
+# "No tocar Cursos aún": por defecto los grupos de subvención SIGUEN escribiéndose también
+# en el board Cursos (además del board nuevo → duplicación temporal aceptada). Cuando se
+# quiera limpiar, poner EXCLUDE_SUBV_FROM_CURSOS=1 y el sync de Cursos los omitirá.
+EXCLUDE_SUBV_FROM_CURSOS = os.environ.get("EXCLUDE_SUBV_FROM_CURSOS", "") in ("1", "true", "yes")
 
 # Palabras clave para detectar categoría de pregunta
 FORMADOR_KW  = ["formador", "ponente", "docente", "profesor", "tutor", "trainer"]
@@ -51,90 +70,14 @@ COURSE_NAME_OVERRIDES = {
     489:  "Programa Avanzado de Alimentos y Bebidas (2023)",
     780:  "Programa Avanzado de Alimentos y Bebidas (2025)",
     1118: "Programa Avanzado de Alimentos y Bebidas (Actualizado)",
-    959:  "Programa formativo Sostenibilidad W2M_W2Fly (Corto)",
-    648:  "Estrategias visuales de buffet & show cooking - Actualizado",
-    836:  "Programa de Liderazgo (30h)",
-    571:  "Programa Avanzado de Liderazgo Hotelero (2023 - Vibra)",
-    574:  "Programa Intermedio de Liderazgo Hotelero (2023 - Vibra)",
-    222:  "Programa Intermedio de Housekeeping (2022 - 2023)",
     729:  "Programa Avanzado de Liderazgo Hotelero (40 horas)",
     1103: "Programa Avanzado de Liderazgo Hotelero (66 horas)",
-    # Programa de Inglés Hotelero — 4 cursos con el mismo nombre en la API
-    786:  "Programa de Inglés Hotelero (RSK009)",
-    996:  "Programa de Inglés Hotelero (Conforcat)",
-    1001: "Programa de Inglés Hotelero (I)",
-    1097: "Programa de Inglés Hotelero (Básico - Actualizado)",
-    # Programa Avanzado de Inglés Hotelero — 2 cursos con el mismo nombre en la API
-    1115: "Programa Avanzado de Inglés Hotelero (2025)",
-    1219: "Programa Avanzado de Inglés Hotelero (Actualizado 2026)",
-    # PTD Ávoris 2021/22 — cursos archivados reactivados
-    126:  "Programa de Transformación Digital I (Ávoris)",
-    171:  "Programa de Transformación Digital II (Ávoris)",
-    207:  "Programa de Transformación Digital (Ávoris 40h)",
-    55:   "Programa Avanzado de Transformación Digital (Ávoris)",
-    # RSK (Reskilling) — cursos subvencionados con grupos de empresa
-    # Housekeeping
-    941:  "Programa de Housekeeping (RSK005)",
-    972:  "Programa de Housekeeping I (RSK015)",
-    1052: "Programa de Housekeeping II (RSK016)",
-    975:  "Programa Intermedio de Housekeeping (RSK026)",
-    978:  "Módulo Avanzado de Housekeeping (RSK027)",
-    1076: "Programa para la cualificación y recualificación de los profesionales del área de pisos y limpieza (housekeeping) (RSK021)",
-    # Ofimática
-    950:  "Ofimática: hojas de cálculo, PowerBI e inteligencia artificial (RSK011)",
-    1031: "Ofimática: hojas de cálculo, PowerBI e inteligencia artificial (RSK041)",
-    990:  "Ofimática práctica: hojas de cálculo, PowerBI e inteligencia artificial (RSK030)",
-    # Transformación Digital
-    965:  "Programa de Transformación Digital (RSK002)",
-    981:  "Transformación Digital (RSK018)",
-    1040: "Programa de Transformación Digital (RSK045)",
-    # Alemán
-    953:  "Programa de alemán hotelero (RSK010)",
-    1037: "Programa de alemán hotelero (RSK042)",
-    # Technical Services
-    956:  "Programa de Technical Services (RSK006)",
-    # Dirección Hotelera
-    968:  "Programa de Dirección Hotelera (RSK004)",
-    987:  "Programa de Dirección Hotelera (Parte I) (RSK028)",
-    1058: "Programa de Dirección Hotelera (Parte II) (RSK029)",
-    1007: "Programa de Dirección Hotelera I (RSK013)",
-    1049: "Programa de Dirección Hotelera II (RSK014)",
-    1064: "Programa Avanzado de Dirección Hotelera (RSK025)",
-    1089: "Programa Avanzado de Dirección Hotelera (Actualizado RSK025)",
-    # Liderazgo
-    938:  "Programa de Liderazgo (RSK003)",
-    1070: "Programa de Liderazgo (RSK023)",
-    1086: "Liderazgo (RSK032)",
-    1046: "Programa Avanzado de Liderazgo (RSK046)",
-    1092: "Programa Avanzado de Liderazgo (Actualizado RSK046)",
-    # Sostenibilidad
-    929:  "Programa de Sostenibilidad ESG para el sector turístico (RSK001)",
-    1004: "Programa de Sostenibilidad ESG para el sector turístico (RSK033)",
-    1034: "Programa de Sostenibilidad ESG para el sector turístico (RSK044)",
-    # Bar y Restaurante
-    962:  "Programa de Bar y Restaurante (RSK008)",
-    947:  "Programa de Bar y Restaurante (RSK022)",
-    1073: "Programa para la cualificación y recualificación de los profesionales del área de Bar y Restaurante (RSK019)",
-    # Cocina
-    944:  "Programa de Cocina (RSK007)",
-    984:  "Programa de Cocina (RSK017)",
-    1043: "Programa de Cocina (RSK043)",
-    # Inglés
-    786:  "Programa de Inglés Hotelero (RSK009)",
-    # Alimentos y Bebidas
-    1055: "Programa de Alimentos y Bebidas (RSK012)",
-    # Recepción
-    1061: "Programa para la cualificación y recualificación de los profesionales del área de recepción (RSK020)",
-    # Técnicas de Venta
-    1067: "Técnicas de Venta en el Hotel (RSK040)",
-    1095: "Técnicas de Venta en el Hotel (Actualizado RSK040)",
 }
 
 # ── Cursos EXCLUIDOS (parcial, case-insensitive) ──────────────────────────────
 # Todo lo que no esté aquí se sincroniza (si el grupo pasa los filtros)
 EXCLUDED_COURSES = [
     "EGH", "Executive Global Hospitality", "Gestión Responsable",  # EGH → su propio script
-    "Gestión Operativa",                                           # CSUO → board EGH (su propio script)
     "EISI HOTEL", "Bienvenidos", "Examples",                        # Demos/admin
     "EISI WORK",                                                    # Gestión interna
     "MLL SOP",                                                      # SOP's cocina
@@ -145,6 +88,57 @@ EXCLUDED_COURSES = [
 EXCLUDED_GROUP_KW = [
     "matrícula abierta", "matricula abierta",
     "grupo abierto", "abierto 2025", "abierta 2025",
+]
+
+# ── Grupos SIN FECHA en el nombre que SÍ deben sincronizarse ─────────────────
+# is_group_active descarta los grupos cuyo nombre no trae fecha parseable
+# (conservador: evita resucitar grupos viejos/demo cada noche). Los clientes
+# cuyos grupos se nombran SIN fecha (p. ej. "Juaneda Hospitales - Formación
+# PRL personal sanitario…") se declaran aquí por palabra clave (substring,
+# case-insensitive, sobre CURSO + GRUPO). Los grupos sin fecha que NO estén
+# aquí se saltan igual que antes, pero ahora dejan un aviso en el log del
+# nocturno para que el próximo caso no muera en silencio.
+# 2026-08-14: añadido "juaneda" (encuestas cargadas inicialmente a mano con
+# script; a partir de ahora el nocturno las mantiene al día).
+NO_DATE_ACTIVE_KW = [
+    "juaneda",
+]
+# 2026-08-18 · La lista pasa a ser AUTORITATIVA (antes solo se consultaba cuando el
+# nombre del grupo no traía NINGUNA fecha parseable). Motivo: los tres cursos de
+# Juaneda deberían sincronizarse y solo lo hacían dos ("con radiaciones" y "no
+# sanitario"); "sanitario sin radiaciones" no llegaba nunca al board de encuestas
+# aunque sus alumnos tienen progreso real (90,91% · 27,27% · 9,09%). Si el nombre
+# de ese grupo trae algo que parse_group_dates interpreta como fecha (año < 2025,
+# inicio futuro, o más de GROUP_ACTIVE_MAX_DAYS), is_group_active devolvía False
+# en la rama de fechas y NO llegaba a mirar esta lista. Ahora se consulta primero.
+ALWAYS_ACTIVE_KW = NO_DATE_ACTIVE_KW
+
+
+def _is_always_active(course="", group_name=""):
+    hay = f"{course or ''} {group_name or ''}".lower()
+    return any(k in hay for k in ALWAYS_ACTIVE_KW)
+
+
+def _traza(course, group_name, msg):
+    """Log dirigido: solo escribe para los clientes de ALWAYS_ACTIVE_KW, para poder
+    seguir en el log del nocturno qué pasa con ellos sin ensuciar el resto."""
+    if _is_always_active(course, group_name):
+        print(f"  [traza] {course or '?'} / {group_name or '?'} → {msg}")
+
+# ── Cursos que NO deben sufrir la exclusión por nombre de encuesta ───────────
+# 2026-08-18 · EXCLUDED_SURVEY_NAMES existe para que las encuestas GLOBALES de
+# programa no se cuenten como módulo (duplicarían la nota en programas que ya
+# tienen una encuesta por módulo). Pero hay clientes cuya ÚNICA encuesta de
+# satisfacción es precisamente esa: Juaneda usa "¿Qué te ha parecido el curso?",
+# que casa con la entrada "ha parecido el curso" y se tiraba a la basura DESPUÉS
+# de haberla descargado bien de EvolCampus. Aquí se declaran (substring sobre
+# curso + grupo) los que sí deben pasar.
+# Cada entrada es un PAR (palabra del curso/grupo, palabra del nombre de la encuesta):
+# la excepción se aplica SOLO a esa encuesta y SOLO en ese curso. Cualquier otra
+# encuesta excluida sigue excluida ahí, y esa encuesta sigue excluida en el resto
+# de clientes.
+SURVEY_EXCL_BYPASS = [
+    ("juaneda", "ha parecido el curso"),   # "¿Qué te ha parecido el curso?" de Juaneda PRL
 ]
 
 # ── Encuestas excluidas (por nombre de survey, parcial, case-insensitive) ────
@@ -191,11 +185,17 @@ def evol_token():
     return _evol_token
 
 
-def get_all_groups():
+def get_all_groups(retries=4):
     headers = {"Authorization": f"Bearer {evol_token()}"}
-    resp = requests.get(f"{EVOLCAMPUS_API}/getCoursesGroups", headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    data = None
+    for attempt in range(retries):
+        resp = requests.get(f"{EVOLCAMPUS_API}/getCoursesGroups", headers=headers, timeout=60)
+        if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+            wait = (attempt + 1) * 10
+            print(f"  ⚠️  getCoursesGroups HTTP {resp.status_code}, reintento en {wait}s ({attempt+1}/{retries})")
+            time.sleep(wait); continue
+        resp.raise_for_status()
+        data = resp.json(); break
     groups = []
     items = data if isinstance(data, list) else data.get("courses", data.get("groups", data.get("data", [])))
     for item in items:
@@ -210,7 +210,7 @@ def get_all_groups():
     return groups
 
 
-def get_surveys_by_group(group_id):
+def get_surveys_by_group(group_id, retries=4):
     """Obtiene encuestas de un grupo, siempre con activities=True."""
     try:
         gid = int(group_id)
@@ -218,17 +218,20 @@ def get_surveys_by_group(group_id):
         gid = group_id
     headers = {"Authorization": f"Bearer {evol_token()}"}
     payload = {"groupid": gid, "activities": True}
-    resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
-                         headers=headers, json=payload, timeout=30)
-    if resp.status_code == 400:
-        return None
-    if not resp.ok:
-        print(f"    Detalle error API: {resp.text[:300]}")
-    resp.raise_for_status()
-    data = resp.json()
-    if isinstance(data, list):
-        return None  # API devuelve [] cuando no hay datos
-    return data
+    for attempt in range(retries):
+        resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
+                             headers=headers, json=payload, timeout=60)
+        if resp.status_code == 400:
+            return None
+        if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+            wait = (attempt + 1) * 8
+            print(f"    ⚠️  getSurveysByGroup {gid} HTTP {resp.status_code}, reintento en {wait}s")
+            time.sleep(wait); continue
+        if not resp.ok:
+            print(f"    Detalle error API: {resp.text[:300]}")
+        resp.raise_for_status()
+        return resp.json()
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -291,37 +294,48 @@ def val_to_pct(val, scale):
 
 
 def parse_group_dates(group_name):
+    """Extrae (start, end) de un nombre de grupo.
+    Reconoce un rango "DD/MM al DD/MM" y, si no lo hay, una única fecha de inicio
+    "DD/MM" (grupos mal nombrados sin fecha de fin). Si el nombre no trae año de 4
+    cifras, se asume el año actual."""
     start_date = ""
     end_date = ""
+    year_match = re.search(r'(\d{4})', group_name)
+    year = year_match.group(1) if year_match else str(datetime.now().year)
+
+    def _to_iso(raw):
+        parts = raw.split("/")
+        if len(parts) == 2:
+            d, mo, y = parts[0], parts[1], year
+        else:
+            d, mo, y = parts
+            if len(y) == 2:
+                y = "20" + y
+        try:
+            return datetime(int(y), int(mo), int(d)).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            return ""
+
     m = re.search(r'(\d{1,2}/\d{2}(?:/\d{4})?)\s*(?:al?|-)\s*(\d{1,2}/\d{2}(?:/\d{4})?)', group_name)
     if m:
-        raw_start, raw_end = m.group(1), m.group(2)
-        year_match = re.search(r'(\d{4})', group_name)
-        year = year_match.group(1) if year_match else str(datetime.now().year)
-        for raw, target in [(raw_start, "start"), (raw_end, "end")]:
-            parts = raw.split("/")
-            if len(parts) == 2:
-                d, mo = parts
-                y = year
-            else:
-                d, mo, y = parts
-                if len(y) == 2:
-                    y = "20" + y
-            try:
-                dt = datetime(int(y), int(mo), int(d))
-                if target == "start":
-                    start_date = dt.strftime("%Y-%m-%d")
-                else:
-                    end_date = dt.strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                pass
+        start_date = _to_iso(m.group(1))
+        end_date   = _to_iso(m.group(2))
+    else:
+        # Sin rango: intentar una única fecha de inicio (grupos sin "al <fin>").
+        m1 = re.search(r'(\d{1,2}/\d{2}(?:/\d{4})?)', group_name)
+        if m1:
+            start_date = _to_iso(m1.group(1))
     return start_date, end_date
 
 
-def process_group_data(raw_data, group_name, course_name):
+def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
     """
     Procesa la respuesta cruda de getSurveysByGroup para cursos NO-EGH.
     El nombre del módulo viene de survey["subject"].
+
+    Si allowed_dnis (set de DNIs normalizados) está definido, SOLO se tienen en
+    cuenta los registros de esos alumnos (export filtrado por empresa). Las medias
+    de módulo/programa se recalculan únicamente con esos alumnos.
     """
     grp = raw_data.get("group", raw_data)
     surveys = grp.get("surveys", [])
@@ -338,6 +352,7 @@ def process_group_data(raw_data, group_name, course_name):
 
     module_rows     = []
     individual_rows = []
+    _ID_ENROLL_STATS = {"n": 0, "ok": 0}   # v60gz · diagnóstico cobertura id_enroll
 
     for survey in surveys:
         if survey.get("type", "").lower() == "fundae":
@@ -346,7 +361,16 @@ def process_group_data(raw_data, group_name, course_name):
         # Excluir encuestas de programa global (se tratan aparte)
         _sname = (survey.get("name") or "").strip().lower()
         if any(kw in _sname for kw in EXCLUDED_SURVEY_NAMES):
-            continue
+            _hay = f"{course_name or ''} {group_name or ''}".lower()
+            if any(_ck in _hay and _sk in _sname for _ck, _sk in SURVEY_EXCL_BYPASS):
+                # Curso declarado en SURVEY_EXCL_BYPASS_KW: su encuesta global ES la
+                # encuesta de satisfacción, así que se procesa como un módulo más.
+                _traza(course_name, group_name, f"encuesta ACEPTADA por SURVEY_EXCL_BYPASS: "
+                                                f"\"{(survey.get('name') or '').strip()}\"")
+            else:
+                _traza(course_name, group_name, f"encuesta DESCARTADA por EXCLUDED_SURVEY_NAMES: "
+                                           f"\"{(survey.get('name') or '').strip()}\"")
+                continue
 
         # Detectar escala de esta encuesta (4 o 5) antes de procesar
         survey_scale = detect_survey_scale(survey)
@@ -382,10 +406,16 @@ def process_group_data(raw_data, group_name, course_name):
         for record in records:
             student   = record.get("name") or "Anónimo"
             student_dni = record.get("id_card") or ""
-            # ID de matrícula de EvolCampus. En encuestas anónimas viene como
-            # "anonymous" (igual que name/id_card) → lo dejamos vacío.
-            _id_enroll = record.get("id_enroll")
-            student_id_enroll = "" if _id_enroll in ("anonymous", None) else str(_id_enroll)
+            # id de matrícula de EvolCampus (getSurveysByGroup → record.id_enroll) → se
+            # escribe en la columna ID_Evolcampus del board de encuestas. "anonymous"
+            # (encuestas anónimas) se descarta para no romper el cruce.
+            _ide = record.get("id_enroll")
+            rec_id_enroll = "" if (_ide is None or str(_ide).strip().lower() == "anonymous") else str(_ide).strip()
+            # Export filtrado por empresa: saltar alumnos que no pertenecen a la marca.
+            if allowed_dnis is not None:
+                _dnin = re.sub(r'[^0-9A-Za-z]', '', str(student_dni)).upper()
+                if not _dnin or _dnin not in allowed_dnis:
+                    continue
             questions = record.get("questions", [])
             has_answer = False
 
@@ -479,7 +509,6 @@ def process_group_data(raw_data, group_name, course_name):
                     "modulo":         module_name,
                     "alumno":         student,
                     "dni":            student_dni,
-                    "id_enroll":      student_id_enroll,
                     "formador":       " / ".join(rec_formadores_ord),
                     "pct_global":     to_pct(rec_scores_global),
                     "pct_formador":   to_pct(rec_scores_formador),
@@ -494,6 +523,13 @@ def process_group_data(raw_data, group_name, course_name):
                 for i, fname in enumerate(rec_formadores_ord[:6], 1):
                     rec_row[f"formador_{i}"]     = fname
                     rec_row[f"pct_formador_{i}"] = to_pct(rec_formador_scores[fname])
+                # v60gz · Solo escribir ID_Evolcampus si viene con valor. NUNCA escribir
+                # vacío: si EvolCampus no manda id_enroll en esta pasada, dejar el que ya
+                # hubiera (no borrarlo). Contador para diagnóstico.
+                _ID_ENROLL_STATS["n"] += 1
+                if rec_id_enroll:
+                    rec_row["id_evolcampus"] = rec_id_enroll
+                    _ID_ENROLL_STATS["ok"] += 1
                 mod_individual_rows.append(rec_row)
 
         _fecha_fallback = mod_last_date or survey_date
@@ -561,6 +597,8 @@ def process_group_data(raw_data, group_name, course_name):
         "fecha_fin":       end_date,
     }
 
+    if _ID_ENROLL_STATS["n"]:
+        print(f"     [id_enroll] {group_name}: {_ID_ENROLL_STATS['ok']}/{_ID_ENROLL_STATS['n']} filas con id de matrícula", flush=True)
     return program_row, module_rows, individual_rows
 
 
@@ -568,7 +606,7 @@ def process_group_data(raw_data, group_name, course_name):
 # MONDAY.COM API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def monday_query(query, variables=None, timeout=60, retries=3):
+def monday_query(query, variables=None, retries=4):
     headers = {
         "Authorization": MONDAY_TOKEN,
         "Content-Type":  "application/json",
@@ -577,22 +615,32 @@ def monday_query(query, variables=None, timeout=60, retries=3):
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    last_exc = None
+    # Reintentos ante timeouts / errores transitorios de red o servidor (429/5xx).
+    # El board Cursos tiene ~18k ítems y la precarga a veces excede el timeout.
     for attempt in range(retries):
         try:
-            resp = requests.post(MONDAY_API, headers=headers, json=payload, timeout=timeout)
+            resp = requests.post(MONDAY_API, headers=headers, json=payload, timeout=90)
             resp.raise_for_status()
             data = resp.json()
             if "errors" in data:
                 raise ValueError(f"Monday API error: {data['errors']}")
             return data.get("data", {})
-        except Exception as e:
-            last_exc = e
-            if attempt < retries - 1:
-                wait = 2 ** attempt
-                print(f"    ⚠️  API error (intento {attempt+1}/{retries}), reintentando en {wait}s: {e}")
+        except requests.exceptions.HTTPError as e:
+            sc = getattr(e.response, "status_code", None)
+            if sc in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                wait = (attempt + 1) * 15
+                print(f"  ⚠️  HTTP {sc}, reintentando en {wait}s... ({attempt+1}/{retries})")
                 time.sleep(wait)
-    raise last_exc
+            else:
+                raise
+        except requests.exceptions.RequestException as e:
+            # Timeout, ConnectionError, ChunkedEncodingError, ProtocolError… → transitorios
+            if attempt < retries - 1:
+                wait = (attempt + 1) * 15
+                print(f"  ⚠️  Red ({type(e).__name__}), reintentando en {wait}s... ({attempt+1}/{retries})")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def monday_setup_board():
@@ -613,7 +661,6 @@ def monday_setup_board():
         ("modulo",         "Módulo",                 "text"),
         ("formador",       "Formador",               "text"),
         ("alumno",         "Alumno",                 "text"),
-        ("id_enroll",      "ID Matrícula",           "text"),
         ("pct_global",     "% Global",               "numbers"),
         ("respuestas",     "Respuestas",             "numbers"),
         ("pct_formador",   "% Formador",             "numbers"),
@@ -681,8 +728,8 @@ def monday_setup_board():
     return config
 
 
-def load_config(rsk_board=False):
-    path = CONFIG_FILE_RSK if rsk_board else CONFIG_FILE
+def load_config(path=None):
+    path = path or CONFIG_FILE
     try:
         with open(path) as f:
             return json.load(f)
@@ -694,8 +741,7 @@ def load_config(rsk_board=False):
 
 def preload_board_items(board_id):
     """Pre-carga todos los items del board en un dict {name: item_id}.
-    Así evitamos hacer una búsqueda por nombre en cada upsert (ahorra ~50% de llamadas API).
-    Usa retry por página para que un timeout puntual no corte la precarga a medias."""
+    Así evitamos hacer una búsqueda por nombre en cada upsert (ahorra ~50% de llamadas API)."""
     print(f"\n  📦 Pre-cargando items existentes del board...")
     items_map = {}
     cursor = None
@@ -703,44 +749,33 @@ def preload_board_items(board_id):
 
     while True:
         page += 1
-        for attempt in range(4):
-            try:
-                if cursor:
-                    query = """
-                    query($cursor: String!) {
-                        next_items_page(cursor: $cursor, limit: 500) {
-                            cursor
-                            items { id name }
-                        }
+        if cursor:
+            query = """
+            query($cursor: String!) {
+                next_items_page(cursor: $cursor, limit: 500) {
+                    cursor
+                    items { id name }
+                }
+            }
+            """
+            data = monday_query(query, {"cursor": cursor})
+            page_data = data.get("next_items_page", {})
+        else:
+            query = """
+            query($boardId: [ID!]!) {
+                boards(ids: $boardId) {
+                    items_page(limit: 500) {
+                        cursor
+                        items { id name }
                     }
-                    """
-                    data = monday_query(query, {"cursor": cursor}, timeout=90)
-                    page_data = data.get("next_items_page", {})
-                else:
-                    query = """
-                    query($boardId: [ID!]!) {
-                        boards(ids: $boardId) {
-                            items_page(limit: 500) {
-                                cursor
-                                items { id name }
-                            }
-                        }
-                    }
-                    """
-                    data = monday_query(query, {"boardId": [str(board_id)]}, timeout=90)
-                    boards = data.get("boards", [])
-                    if not boards:
-                        print(f"  ✓ {len(items_map)} items pre-cargados en memoria\n")
-                        return items_map
-                    page_data = boards[0].get("items_page", {})
-                break  # éxito
-            except Exception as e:
-                if attempt < 3:
-                    wait = 2 ** attempt
-                    print(f"    ⚠️  Error en página {page} (intento {attempt+1}/4), reintentando en {wait}s: {e}")
-                    time.sleep(wait)
-                else:
-                    raise RuntimeError(f"Preload abortado en página {page} tras 4 intentos: {e}")
+                }
+            }
+            """
+            data = monday_query(query, {"boardId": [str(board_id)]})
+            boards = data.get("boards", [])
+            if not boards:
+                break
+            page_data = boards[0].get("items_page", {})
 
         items = page_data.get("items", [])
         new_cursor = page_data.get("cursor")
@@ -801,8 +836,6 @@ def preload_program_dates(board_id, group_programa_id, fecha_col_id, fecha_dt_co
 def monday_upsert_item(board_id, group_id, item_name, col_ids, row, dry_run=False, items_cache=None):
     """Crea o actualiza un ítem en Monday.
     Si se pasa items_cache (dict {name: id}), se evita la búsqueda por nombre (más rápido)."""
-    if len(item_name) > 255:
-        item_name = item_name[:255]
     col_values = {}
 
     def add(key, val):
@@ -813,7 +846,11 @@ def monday_upsert_item(board_id, group_id, item_name, col_ids, row, dry_run=Fals
     add("modulo",        row.get("modulo", ""))
     add("alumno",        row.get("alumno", ""))
     add("dni",           row.get("dni", ""))
-    add("id_enroll",     row.get("id_enroll", ""))
+    # 2026-08-14 · FIX: el sync capturaba id_enroll (rec_row["id_evolcampus"], v60gx)
+    # pero el upsert NUNCA lo escribia en Monday (faltaba este add) -> el nocturno
+    # no rellenaba la columna ID_Evolcampus. Sin default "": solo se escribe si la
+    # fila lo trae (nunca pisa un id existente con vacio, requisito v60gx).
+    add("id_evolcampus", row.get("id_evolcampus"))
     add("formador",      row.get("formador", ""))
     add("pct_global",    row.get("pct_global"))
     add("respuestas",    row.get("respuestas"))
@@ -860,10 +897,8 @@ def monday_upsert_item(board_id, group_id, item_name, col_ids, row, dry_run=Fals
             result = monday_query(q_search, {"board_id": board_id, "name": item_name})
             found = result.get("items_page_by_column_values", {}).get("items", [])
             item_id = found[0]["id"] if found else None
-        except Exception as e:
-            # Advertir explícitamente: si esto falla se crearía un duplicado
-            print(f"    ⚠️  No se pudo buscar ítem existente '{item_name}': {e} — SALTANDO para evitar duplicado")
-            return
+        except Exception:
+            item_id = None
 
     if item_id:
         q_update = """
@@ -912,72 +947,158 @@ def is_group_excluded(group_name):
     return any(k in gn for k in EXCLUDED_GROUP_KW)
 
 
+# Marcadores de subvención: código de curso tipo "(RSK046)"/"(RSKB23/00121)" o grupos
+# "SubvAehcos"/"..._RSKA23/..." → van al board "Subvenciones RSK y AEHCOS" (5100940645).
+_SUBV_MARKERS = ("rsk", "aehcos", "subv")
+
+def is_subvencion(course, group_name):
+    """True si el (curso, grupo) es una formación subvencionada RSK/AEHCOS.
+    Regla acordada: 'todo RSK/AEHCOS'. Substring case-insensitive sobre curso+grupo."""
+    hay = f"{course or ''} {group_name or ''}".lower()
+    return any(m in hay for m in _SUBV_MARKERS)
+
+
 def is_group_in_year(group_name, year):
     """Devuelve True si el grupo pertenece al año indicado."""
     return str(year) in group_name
 
 
-def is_group_active(group_name):
+# Ventana (días desde el inicio) para considerar activo un grupo cuyo nombre NO trae
+# fecha de fin. Cubre programas largos (~8 meses) sin resucitar grupos antiguos.
+GROUP_ACTIVE_MAX_DAYS = 240
+
+
+def is_group_active(group_name, course="", no_date_filter=False):
     """Comprueba si un grupo está activo hoy: ya ha empezado Y aún no ha terminado.
+    Si no_date_filter=True (p. ej. board Subvenciones RSK/AEHCOS), los grupos SIN
+    NINGUNA fecha en el nombre se tratan como ACTIVOS (muchos RSK no llevan fecha).
+    Los grupos que SÍ tienen fecha clara (end/start < 2025) se siguen rechazando.
     Si no hay año en el nombre, parse_group_dates asigna el año actual.
     Exigir start_date <= hoy evita activar grupos sin año cuyo inicio en el año
-    actual es futuro (ej. grupos de 2024 cuya fecha, asignada a 2026, aún no ha llegado)."""
+    actual es futuro (ej. grupos de 2024 cuya fecha, asignada a 2026, aún no ha llegado).
+
+    Si el nombre NO trae fecha de fin (grupo mal nombrado, p. ej. "…- 13/07"), NO se
+    descarta por eso: si tiene una fecha de inicio ya empezada y reciente (dentro de
+    GROUP_ACTIVE_MAX_DAYS), se trata como activo para no perder sus encuestas.
+
+    2026-08-14 · Grupos SIN NINGUNA fecha en el nombre (p. ej. Juaneda, cuyo grupo
+    se llama igual que el curso): se activan solo si curso/grupo casan con
+    NO_DATE_ACTIVE_KW; el resto se sigue saltando (conservador) pero dejando un
+    aviso en el log para detectar el próximo cliente con grupos sin fecha."""
+    # 2026-08-18 · Lista blanca AUTORITATIVA: si el curso/grupo está declarado,
+    # es activo pase lo que pase con las fechas del nombre.
+    if _is_always_active(course, group_name):
+        return True
+
     start_date, end_date = parse_group_dates(group_name)
-    if not end_date:
-        return False
-    # Rechazar grupos anteriores a 2025 (año extraído de la fecha parseada)
-    if end_date[:4] < "2025":
-        return False
     today = datetime.now().strftime("%Y-%m-%d")
-    # El grupo debe haber empezado ya (o no tener fecha de inicio)
-    if start_date and start_date > today:
-        return False
-    return end_date >= today
+
+    if end_date:
+        # Rechazar grupos anteriores a 2025 (año extraído de la fecha parseada)
+        if end_date[:4] < "2025":
+            return False
+        # El grupo debe haber empezado ya (o no tener fecha de inicio)
+        if start_date and start_date > today:
+            return False
+        return end_date >= today
+
+    # Sin fecha de fin en el nombre: no descartar solo por eso.
+    if start_date:
+        if start_date[:4] < "2025":
+            return False
+        if start_date > today:        # inicio futuro → aún no activo
+            return False
+        try:
+            dias = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d")).days
+        except ValueError:
+            return False
+        return dias <= GROUP_ACTIVE_MAX_DAYS
+
+    # Ni inicio ni fin parseables.
+    # Opción B: con no_date_filter (subvenciones), los grupos sin fecha se activan
+    # (RSK/AEHCOS suelen no llevar fecha; los de fecha vieja ya se filtraron arriba).
+    if no_date_filter:
+        return True
+    # Por defecto: activar SOLO si está declarado (lista blanca).
+    hay = f"{course or ''} {group_name or ''}".lower()
+    if any(k in hay for k in NO_DATE_ACTIVE_KW):
+        return True
+    print(f"  ⏭ Grupo SIN fecha en el nombre → saltado: {course or '?'} / {group_name} "
+          f"(si debe sincronizarse, añadir palabra clave a NO_DATE_ACTIVE_KW)")
+    return False
 
 
-def mode_explore():
-    """Muestra la estructura de datos de un grupo (solo lectura)."""
+def mode_explore(filter_course=None):
+    """Muestra la estructura de datos de los grupos (solo lectura).
+    Si filter_course está definido, solo explora los grupos cuyo curso contenga ese texto.
+    Guarda la respuesta cruda de cada grupo explorado en explore_cursos_output.json."""
     print("\n── EXPLORACIÓN ──────────────────────────────────────────")
     all_groups = get_all_groups()
-    targets = [g for g in all_groups if is_course_allowed(g["course"])]
+    targets = [g for g in all_groups if not is_course_excluded(g["course"])]
+    if filter_course:
+        targets = [g for g in targets if filter_course.lower() in g["course"].lower()]
+        print(f"  filtro de curso: '{filter_course}'")
 
     if not targets:
-        print("  No se encontraron grupos para los cursos permitidos.")
+        print("  No se encontraron grupos para los cursos indicados.")
         return
 
     print(f"  {len(targets)} grupos encontrados")
     for g in targets:
         print(f"  - {g['course']} / {g['group_name']} (ID: {g['group_id']})")
 
+    dump = {}
     for g in targets:
         raw = get_surveys_by_group(g["group_id"])
         if raw is None:
+            print(f"\n  Explorando: {g['course']} / {g['group_name']} → sin respuesta de la API")
             continue
-        print(f"\n  Explorando: {g['course']} / {g['group_name']}")
-        with open("explore_cursos_output.json", "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2, ensure_ascii=False)
-        print(f"  ✓ Guardado en explore_cursos_output.json")
-        grp = raw.get("group", raw)
-        for i, s in enumerate(grp.get("surveys", [])[:15]):
+        key = f"{g['course']} / {g['group_name']} ({g['group_id']})"
+        dump[key] = raw
+        print(f"\n  Explorando: {key}")
+        # La API a veces devuelve dict {"group": {...}} y a veces una lista de surveys.
+        if isinstance(raw, dict):
+            grp = raw.get("group", raw)
+            surveys = grp.get("surveys", []) if isinstance(grp, dict) else []
+        elif isinstance(raw, list):
+            surveys = raw
+        else:
+            surveys = []
+        if not surveys:
+            print("    (0 surveys en la respuesta)")
+        for i, s in enumerate(surveys[:15]):
             stype = s.get("type", "?")
             subject = s.get("subject", "—sin subject—")
             recs = len(s.get("records", []))
             print(f"    [{i}] type={stype:8s} subject=\"{subject}\" records={recs}")
-        break
+
+    if filter_course:
+        _safe = "".join(c if c.isalnum() else "_" for c in filter_course)[:40]
+        out_name = f"explore_cursos_{_safe}.json"
+    else:
+        out_name = "explore_cursos_output.json"
+    with open(out_name, "w", encoding="utf-8") as f:
+        json.dump(dump, f, indent=2, ensure_ascii=False)
+    print(f"\n  ✓ Guardado {len(dump)} grupo(s) en {out_name}")
 
 
-def mode_sync(dry_run=False, year=None, filter_course=None, no_date_filter=False, group_ids=None, rsk_board=False, force=False):
+def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenciones=False, no_date_filter=False):
     """Sincroniza cursos con Monday.
     Si year está definido, sincroniza todos los grupos de ese año (activos o no).
-    Si no_date_filter=True, sincroniza todos los grupos sin filtro de fecha.
     Si no, solo sincroniza los grupos activos hoy.
     Si filter_course está definido, solo sincroniza grupos cuyo curso contenga ese texto.
+    Si force=True, ignora el salto por fecha "sin cambios" y reprocesa todos los grupos
+    (backfill: recoge respuestas tardías que no movieron la fecha máxima del programa).
+    Si subvenciones=True, escribe al board "Subvenciones RSK y AEHCOS" y procesa SOLO los
+    grupos RSK/AEHCOS. En la ejecución normal (Cursos), esos grupos se procesan igual que
+    hoy salvo que EXCLUDE_SUBV_FROM_CURSOS esté activo (entonces se omiten).
     """
-    year_label = f" año {year}" if year else (" (sin filtro fecha)" if no_date_filter else " (grupos activos)")
+    tablero_label = "SUBVENCIONES" if subvenciones else "CURSOS"
+    year_label = f" año {year}" if year else " (grupos activos)"
     filter_label = f" · filtro: '{filter_course}'" if filter_course else ""
-    print(f"\n── SYNC CURSOS{year_label}{filter_label} {'[DRY-RUN] ' if dry_run else ''}──────────────────────────────────")
+    print(f"\n── SYNC {tablero_label}{year_label}{filter_label} {'[DRY-RUN] ' if dry_run else ''}──────────────────────────────────")
 
-    config = load_config(rsk_board=rsk_board)
+    config = load_config(SUBV_CONFIG_FILE if subvenciones else CONFIG_FILE)
     board_id           = config["board_id"]
     group_programa_id  = config["group_programa_id"]
     group_modulo_id    = config["group_modulo_id"]
@@ -986,7 +1107,7 @@ def mode_sync(dry_run=False, year=None, filter_course=None, no_date_filter=False
 
     # Pre-cargar items existentes del board para evitar búsquedas individuales.
     # Si se usa --filter-course se salta la precarga y se usan búsquedas individuales (None = busca en Monday cada vez).
-    if not dry_run and not filter_course and not group_ids:
+    if not dry_run and not filter_course:
         items_cache = preload_board_items(board_id)
         fecha_col_id    = col_ids.get("fecha_ultima", "")
         fecha_dt_col_id = col_ids.get("fecha_ultima_dt", "")
@@ -1014,30 +1135,42 @@ def mode_sync(dry_run=False, year=None, filter_course=None, no_date_filter=False
 
         # Filtro de curso
         if is_course_excluded(course):
+            _traza(course, group_name, "SALTADO por EXCLUDED_COURSES")
             skipped_course += 1
             continue
+
+        # Enrutado subvenciones RSK/AEHCOS ↔ board correcto.
+        _is_subv = is_subvencion(course, group_name)
+        if subvenciones:
+            # Ejecución al board Subvenciones: SOLO grupos RSK/AEHCOS.
+            if not _is_subv:
+                skipped_course += 1
+                continue
+        else:
+            # Ejecución al board Cursos: omitir subvención solo si se pide expresamente
+            # (EXCLUDE_SUBV_FROM_CURSOS). Por defecto se procesan igual que hoy.
+            if _is_subv and EXCLUDE_SUBV_FROM_CURSOS:
+                skipped_course += 1
+                continue
 
         # Filtro opcional por nombre de curso
         if filter_course and filter_course.lower() not in course.lower():
             continue
 
-        # Filtro opcional por group_id específico
-        if group_ids and str(group_id) not in group_ids:
-            continue
-
         # Filtro de grupo: matrícula abierta, etc.
         if is_group_excluded(group_name):
+            _traza(course, group_name, "SALTADO por EXCLUDED_GROUP_KW (matrícula abierta, etc.)")
             skipped_group += 1
             continue
 
         # Filtro de año / actividad
-        if no_date_filter:
-            pass  # sin filtro de fecha: sincronizar todos los grupos
-        elif year:
+        if year:
             if not is_group_in_year(group_name, year):
                 continue
         else:
-            if not is_group_active(group_name):
+            if not is_group_active(group_name, course, no_date_filter=no_date_filter):
+                _traza(course, group_name,
+                       f"SALTADO por is_group_active (fechas parseadas: {parse_group_dates(group_name)})")
                 continue
 
         course_clean = course.strip()
@@ -1146,7 +1279,9 @@ def mode_sync(dry_run=False, year=None, filter_course=None, no_date_filter=False
 
     # ── Paso final: regenerar dashboard JSON + inyectar en HTML ───────────────
     # Nota: link_encuestas_alumnos.py se ejecuta como paso separado después del sync
-    if not dry_run:
+    # En CI (GitHub/Netlify) este paso es redundante: Netlify reconstruye el JSON
+    # leyendo ambos boards. Se salta con SKIP_DASHBOARD_REGEN=1 (lo pone el workflow).
+    if not dry_run and os.environ.get("SKIP_DASHBOARD_REGEN", "") not in ("1", "true", "yes"):
         step = "2"
         print(f"\n[{step}] Regenerando dashboard (datos_dashboard.json + HTML)...")
         m2d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monday_to_dashboard.py")
@@ -1159,6 +1294,236 @@ def mode_sync(dry_run=False, year=None, filter_course=None, no_date_filter=False
                 print(f"  {line.strip()}")
         if result.returncode != 0:
             print(f"  ⚠️  monday_to_dashboard.py terminó con error (código {result.returncode})")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORT a Excel (plantilla de Monday) — para subida manual
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _marca_match(m, target):
+    """Compara marcas de forma laxa (acentos/espacios/mayúsculas)."""
+    import unicodedata
+    def n(x):
+        x = unicodedata.normalize('NFD', str(x or '').lower())
+        x = ''.join(c for c in x if unicodedata.category(c) != 'Mn')
+        return re.sub(r'[^a-z0-9]', '', x)
+    a, b = n(m), n(target)
+    return bool(a) and bool(b) and (a in b or b in a)
+
+
+def _monday_gql(query, variables=None, retries=4):
+    """Cliente GraphQL mínimo para Monday (lee mirrors con display_value)."""
+    headers = {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2024-10"}
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    for attempt in range(retries):
+        try:
+            r = requests.post(MONDAY_API, json=payload, headers=headers, timeout=60)
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep((attempt + 1) * 10); continue
+            r.raise_for_status()
+            d = r.json()
+            if "errors" in d:
+                print(f"  ⚠️  GraphQL errors: {d['errors']}"); return None
+            return d.get("data")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+            if attempt < retries - 1:
+                time.sleep((attempt + 1) * 8)
+            else:
+                print(f"  ❌ Monday error tras {retries} intentos: {e}"); raise
+    return None
+
+
+def _norm_dni(s):
+    return re.sub(r'[^0-9A-Za-z]', '', str(s or '')).upper()
+
+
+# Board Matrículas + columnas mirror (verificadas con el conector de Monday):
+#   Nº documento = lookup4 · Cuenta (marca) = reflejo77 · Grupo Evolcampus = reflejo_1__1
+MATRICULAS_BOARD_ID = "1407763206"
+_MAT_COLS = '["reflejo77","lookup4","reflejo_1__1"]'
+
+def _get_company_dnis_groups(company):
+    """Devuelve (set DNIs normalizados, set group_ids EvolCampus) de los alumnos
+    cuya 'Cuenta' (marca) coincide con `company`, leyendo el board de Matrículas.
+    Lee la marca DIRECTA (mirror 'Cuenta'), evitando la cadena Sociedad→Cuenta."""
+    dnis, groups = set(), set()
+    total = 0
+
+    def _process(items):
+        nonlocal total
+        for it in items:
+            total += 1
+            vals = {cv["id"]: (cv.get("display_value") or "") for cv in it.get("column_values", [])}
+            if not _marca_match(vals.get("reflejo77", ""), company):
+                continue
+            d = _norm_dni(vals.get("lookup4", ""))
+            if d:
+                dnis.add(d)
+            for part in re.split(r'[,;\s]+', str(vals.get("reflejo_1__1", "") or "")):
+                if part.isdigit():
+                    groups.add(part)
+
+    q_first = ('query ($b: ID!) { boards(ids: [$b]) { items_page(limit: 500) { cursor '
+               'items { column_values(ids: ' + _MAT_COLS + ') { id ... on MirrorValue { display_value } } } } } }')
+    data = _monday_gql(q_first, {"b": MATRICULAS_BOARD_ID})
+    if data and data.get("boards"):
+        page = data["boards"][0]["items_page"]
+        _process(page.get("items", []))
+        cursor = page.get("cursor")
+        q_next = ('query ($c: String!) { next_items_page(limit: 500, cursor: $c) { cursor '
+                  'items { column_values(ids: ' + _MAT_COLS + ') { id ... on MirrorValue { display_value } } } } }')
+        while cursor:
+            dn = _monday_gql(q_next, {"c": cursor})
+            if not dn or not dn.get("next_items_page"):
+                break
+            np = dn["next_items_page"]
+            _process(np.get("items", []))
+            cursor = np.get("cursor")
+
+    print(f"   Matrículas leídas: {total} · DNIs de '{company}': {len(dnis)} · grupos EvolCampus: {len(groups)}")
+    return dnis, groups
+
+
+def mode_export(excel_path, company=None, filter_course=None, year=None,
+                niveles=("encuesta", "modulo", "programa")):
+    """Exporta las encuestas a un Excel con la plantilla del board de Monday, SIN
+    escribir en Monday. Pensado para subida manual de programas ya finalizados.
+
+    - Recorre TODOS los grupos (también finalizados), no solo los activos.
+    - Si company está definido, filtra a los alumnos de esa marca (mapa DNI→Marca
+      de Matrículas) y recalcula las medias de módulo/programa solo con ellos.
+    - niveles: qué filas incluir (encuesta=por alumno, modulo, programa).
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        print("✗ Falta 'openpyxl'. Añádelo a requirements.txt.", file=sys.stderr)
+        sys.exit(2)
+
+    # 1) DNIs y grupos EvolCampus de la empresa.
+    #    Preferimos un fichero de filtros (export_filters.json) generado desde los
+    #    Excel de Matrículas (fiable e incluye finalizados); si la empresa no está
+    #    ahí, caemos al board vivo de Monday (marca 'Cuenta').
+    allowed = None
+    allowed_groups = None
+    if company:
+        print(f"\n[0] DNIs y grupos de '{company}'...")
+        cnorm = lambda x: re.sub(r'[^a-z0-9]', '', str(x or '').lower())
+        ffile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "export_filters.json")
+        filt = None
+        try:
+            with open(ffile, encoding="utf-8") as fh:
+                allf = json.load(fh)
+            tgt = cnorm(company)
+            for k, v in allf.items():
+                if cnorm(k) == tgt or cnorm(v.get("name", "")) == tgt:
+                    filt = v; break
+        except Exception:
+            filt = None
+        if filt:
+            allowed = {_norm_dni(d) for d in filt.get("dnis", []) if d}
+            allowed_groups = {str(x) for x in filt.get("groups", [])}
+            print(f"   (export_filters.json) DNIs: {len(allowed)} · grupos EvolCampus: {len(allowed_groups)}")
+        else:
+            allowed, allowed_groups = _get_company_dnis_groups(company)
+        if not allowed:
+            print(f"✗ 0 DNIs para '{company}'. Revisa el nombre de la empresa "
+                  f"(columna 'Cuenta' del board Matrículas).", file=sys.stderr)
+            sys.exit(2)
+        if not allowed_groups:
+            print("   ⚠️  Sin 'Grupo Evolcampus' en Matrículas: se recorrerán TODOS "
+                  "los grupos (más lento) filtrando por DNI.")
+
+    # Si conocemos los grupos de la empresa (export_filters), vamos DIRECTOS a ellos
+    # y NO pedimos getCoursesGroups (que a veces devuelve 500 y no hace falta).
+    if allowed_groups:
+        groups_to_do = [(gid, "", "") for gid in sorted(allowed_groups, key=lambda x: int(x) if str(x).isdigit() else 0)]
+        print(f"\n[1] {len(groups_to_do)} grupos de '{company}' (directo, sin listar todo EvolCampus)")
+    else:
+        print("\n[1] Obteniendo grupos de EvolCampus...")
+        all_groups = get_all_groups()
+        groups_to_do = [(g["group_id"], g["group_name"], g["course"]) for g in all_groups]
+        print(f"  {len(groups_to_do)} grupos en total")
+
+    TEMPLATE_COLS = ['Name', 'Programa', 'Grupo', 'Módulo', 'Formador', 'Alumno', 'DNI',
+                     'Alumno (rel)', 'Cuenta empresa', 'Empresa - dashboard', '% Global',
+                     'Respuestas', '% Formador', '% Contenido', '% Formato', 'Nº Comentarios',
+                     'Fecha última encuesta', 'Comentarios', 'Fecha inicio', 'Fecha fin']
+    out_rows = []
+    _ntot = len(groups_to_do)
+
+    for _gi, (group_id, group_name, course) in enumerate(groups_to_do, 1):
+        if allowed_groups:
+            print(f"  [{_gi}/{_ntot}] grupo {group_id}…")
+        # En el camino "listar todo" aplicamos exclusiones antes de descargar.
+        if not allowed_groups:
+            if is_course_excluded(course):
+                continue
+            if filter_course and filter_course.lower() not in course.lower():
+                continue
+            if is_group_excluded(group_name):
+                continue
+            if year and not is_group_in_year(group_name, year):
+                continue
+        try:
+            raw = get_surveys_by_group(group_id)
+        except Exception as e:
+            print(f"  ⚠️  grupo {group_id}: error EvolCampus ({e}); se omite.")
+            continue
+        if raw is None:
+            continue
+        # Cuando vamos directos, el curso/grupo lo da la propia respuesta de encuestas.
+        if allowed_groups:
+            grp = raw.get("group", raw) if isinstance(raw, dict) else {}
+            course = (grp.get("course") or course or "").strip()
+            group_name = (grp.get("name") or group_name or str(group_id)).strip()
+            if filter_course and filter_course.lower() not in course.lower():
+                continue
+        course_clean = course.strip()
+        program_row, module_rows, individual_rows = process_group_data(
+            raw, group_name, course, allowed_dnis=allowed)
+        # Si filtramos por empresa y no hay alumnos de ella en este grupo → saltar
+        if allowed is not None and not individual_rows:
+            continue
+        start_date = program_row.get("fecha_inicio", "")
+        end_date   = program_row.get("fecha_fin", "")
+
+        def _add(row, level):
+            name = {
+                "programa": f"{course_clean} — {group_name}",
+                "modulo":   f"{course_clean} — {group_name} — {row.get('modulo','')}",
+                "encuesta": f"{course_clean} — {group_name} — {row.get('modulo','')} — {row.get('alumno','')}",
+            }[level]
+            out_rows.append([
+                name, course_clean, group_name, row.get("modulo", ""), row.get("formador", ""),
+                row.get("alumno", ""), row.get("dni", ""), "", "", (company or ""),
+                row.get("pct_global", ""), row.get("respuestas", ""),
+                row.get("pct_formador", ""), row.get("pct_contenido", ""), row.get("pct_formato", ""),
+                row.get("n_comentarios", ""), row.get("fecha_ultima", ""), row.get("comentarios", ""),
+                start_date, end_date,
+            ])
+
+        if "programa" in niveles:
+            _add(program_row, "programa")
+        if "modulo" in niveles:
+            for mr in module_rows:
+                _add(mr, "modulo")
+        if "encuesta" in niveles:
+            for ir in individual_rows:
+                _add(ir, "encuesta")
+        print(f"  ✓ {course_clean} / {group_name}: {len(individual_rows)} encuestas · {len(module_rows)} módulos")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "encuestas programas"
+    ws.append(TEMPLATE_COLS)
+    for r in out_rows:
+        ws.append(r)
+    wb.save(excel_path)
+    print(f"\n✅ Export: {len(out_rows)} filas → {excel_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1175,25 +1540,32 @@ if __name__ == "__main__":
                         help="Sincronizar todos los grupos del año indicado (incluye pasados). Ej: --year 2025")
     parser.add_argument("--filter-course", metavar="TEXTO",
                         help="Sincronizar solo grupos cuyo curso contenga este texto. Ej: --filter-course 'LGTBI'")
-    parser.add_argument("--no-date-filter", action="store_true",
-                        help="Sincronizar todos los grupos sin filtro de fecha (útil para sync histórico)")
-    parser.add_argument("--group-ids", metavar="IDs",
-                        help="Sincronizar solo grupos con estos IDs (separados por coma). Ej: --group-ids 3798,4208")
-    parser.add_argument("--rsk", action="store_true",
-                        help="Usar board 'Encuestas: Subvenciones RSK' (5100940645) en lugar del board principal")
     parser.add_argument("--force", action="store_true",
-                        help="Forzar re-sync ignorando el check 'Sin cambios' (útil cuando faltan módulos)")
+                        help="Ignora el salto 'sin cambios' por fecha y reprocesa todos los grupos (backfill de respuestas tardías).")
+    parser.add_argument("--subvenciones", action="store_true",
+                        help="Sincroniza SOLO los grupos RSK/AEHCOS al board 'Subvenciones RSK y AEHCOS' (monday_config_subvenciones.json).")
+    parser.add_argument("--no-date-filter", action="store_true",
+                        help="Grupos SIN fecha en el nombre se tratan como activos (RSK/AEHCOS suelen no llevar fecha). Los de fecha vieja <2025 se siguen descartando.")
+    parser.add_argument("--export-excel", metavar="PATH",
+                        help="Exporta encuestas a un Excel con la plantilla de Monday (NO escribe en Monday). Para subida manual.")
+    parser.add_argument("--company", metavar="TEXTO",
+                        help="Filtra el export a los alumnos de esa marca/empresa. Ej: --company 'Garden Hotels'")
+    parser.add_argument("--niveles", metavar="LISTA", default="encuesta,modulo,programa",
+                        help="Niveles a exportar (coma): encuesta,modulo,programa. Por defecto los tres.")
     args = parser.parse_args()
 
-    if not any([args.explore, args.setup, args.sync]):
+    if not any([args.explore, args.setup, args.sync, args.export_excel]):
         parser.print_help()
         sys.exit(0)
 
     if args.explore:
-        mode_explore()
+        mode_explore(filter_course=args.filter_course)
     if args.setup:
         monday_setup_board()
     if args.sync:
-        group_ids_set = set(args.group_ids.split(',')) if args.group_ids else None
         mode_sync(dry_run=args.dry_run, year=args.year, filter_course=args.filter_course,
-                  no_date_filter=args.no_date_filter, group_ids=group_ids_set, rsk_board=args.rsk, force=args.force)
+                  force=args.force, subvenciones=args.subvenciones, no_date_filter=args.no_date_filter)
+    if args.export_excel:
+        mode_export(args.export_excel, company=args.company, filter_course=args.filter_course,
+                    year=args.year,
+                    niveles=tuple(s.strip() for s in (args.niveles or "").split(",") if s.strip()))
