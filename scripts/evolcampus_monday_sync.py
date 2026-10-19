@@ -272,6 +272,23 @@ def is_real_comment(text):
     return t not in negative and len(t) > 3
 
 
+# ── Routing al board EGH ──────────────────────────────────────────────────────
+# EGH, CSUL y CSUO comparten el MISMO board. Se identifican por el prefijo del
+# nombre de GRUPO (así CSUO se distingue de los grupos TEST de su mismo curso).
+# Como respaldo se mantienen las keywords de curso para variantes de EGH/CSUL
+# cuyo grupo no lleve el prefijo.
+EGH_BOARD_GROUP_PREFIXES  = ("EGH", "CSUL", "CSUO")
+EGH_BOARD_COURSE_KEYWORDS = ["EGH", "Executive Global Hospitality", "Gestión Responsable"]
+
+
+def is_egh_board_group(course_name, group_name):
+    """True si el grupo pertenece al board EGH (programas EGH / CSUL / CSUO)."""
+    gp = (group_name or "").strip().upper()
+    if any(gp.startswith(p) for p in EGH_BOARD_GROUP_PREFIXES):
+        return True
+    return any(k.lower() in (course_name or "").lower() for k in EGH_BOARD_COURSE_KEYWORDS)
+
+
 def egh_parte_from_module(module_name, course_name):
     """Clasifica módulos EGH en Parte 1 / Parte 2 / Parte 3.
     Parte 1: asignaturas 1.x–4.x (Liderazgo, Sostenibilidad, Transformación digital, Modelos)
@@ -316,6 +333,17 @@ def parse_group_dates(group_name):
         except Exception:
             pass
 
+    # Formato con "al" y año de 2 dígitos: DD/MM/YY al DD/MM/YY
+    # (ej: CSUO - ... 01/10/26 al 15/02/27). El bloque de 4 dígitos va antes y tiene prioridad.
+    m = re.search(r'(\d{1,2}/\d{1,2}/\d{2})\s+al\s+(\d{1,2}/\d{1,2}/\d{2})(?!\d)', gn)
+    if m:
+        try:
+            start = datetime.strptime(m.group(1), "%d/%m/%y").strftime("%Y-%m-%d")
+            end   = datetime.strptime(m.group(2), "%d/%m/%y").strftime("%Y-%m-%d")
+            return start, end
+        except Exception:
+            pass
+
     # Formato corto con "al": DD/MM al DD/MM - YYYY (año al final)
     m = re.search(r'(\d{1,2}/\d{1,2})\s+al\s+(\d{1,2}/\d{1,2})\s*[-–]\s*(\d{4})', gn)
     if m:
@@ -348,9 +376,9 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
       - program_row: dict con métricas agregadas del programa completo
       - module_rows: lista de dicts, uno por módulo
     """
-    # Determinar si es EGH/CSUL (usan nombre de actividad como módulo)
-    # Para el resto, el módulo viene del campo "asignatura" o "subject" de cada survey
-    _is_egh_csul = any(k in (course_name or "") for k in ["EGH", "Executive Global Hospitality", "CSUL"])
+    # EGH / CSUL / CSUO usan el nombre de actividad como módulo.
+    # Para el resto, el módulo viene del campo "asignatura" o "subject" de cada survey.
+    _is_egh_csul = is_egh_board_group(course_name, group_name)
 
     # Extraer surveys — estructura real: data["group"]["surveys"]
     grp = raw_data.get("group", raw_data)
@@ -1145,9 +1173,8 @@ def mode_sync(dry_run=False, filter_course=None, force=False):
             print(f"  ⏭ Omitido (demo/admin): {course}")
             continue
 
-        # Solo sincronizar cursos EGH / Executive Global Hospitality
-        _egh_keywords = ["EGH", "Executive Global Hospitality", "Gestión Responsable"]
-        if not any(k.lower() in course.lower() for k in _egh_keywords):
+        # Solo sincronizar programas EGH / CSUL / CSUO (los tres → mismo board EGH)
+        if not is_egh_board_group(course, group_name):
             print(f"  ⏭ Omitido (no EGH): {course}")
             continue
 

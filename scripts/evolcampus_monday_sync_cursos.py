@@ -78,6 +78,7 @@ COURSE_NAME_OVERRIDES = {
 # Todo lo que no esté aquí se sincroniza (si el grupo pasa los filtros)
 EXCLUDED_COURSES = [
     "EGH", "Executive Global Hospitality", "Gestión Responsable",  # EGH → su propio script
+    "Gestión Operativa",                                           # CSUO → board EGH (su propio script)
     "EISI HOTEL", "Bienvenidos", "Examples",                        # Demos/admin
     "EISI WORK",                                                    # Gestión interna
     "MLL SOP",                                                      # SOP's cocina
