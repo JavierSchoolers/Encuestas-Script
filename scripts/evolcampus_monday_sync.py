@@ -463,6 +463,7 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
             rec_scores_formato   = []
             rec_comments         = []
             rec_last_date        = None
+            rec_formadores       = []   # nombres de formador que valora este alumno
 
             # Fecha a nivel de registro (antes de iterar preguntas)
             for date_key in ("date", "fecha", "fecha_cuestionario", "submission_date", "answered_at", "created_at"):
@@ -520,6 +521,8 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
                                     if fname not in mod_formador_scores:
                                         mod_formador_scores[fname] = []
                                     mod_formador_scores[fname].append(val)
+                                    if fname not in rec_formadores:
+                                        rec_formadores.append(fname)
                             elif cat == "contenido":
                                 rec_scores_contenido.append(val)
                                 mod_scores_contenido.append(val)
@@ -549,6 +552,7 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
                     "curso":          course_name,
                     "grupo":          group_name,
                     "modulo":         module_name,
+                    "formador":       " / ".join(rec_formadores),
                     "alumno":         student,
                     "dni":            student_dni,
                     "pct_global":     to_pct(rec_scores_global),
@@ -584,9 +588,13 @@ def process_group_data(raw_data, group_name, course_name, subjects_map=None):
         subj_num   = extract_subject_number(module_name)
         asignatura = (subjects_map or {}).get(subj_num, subj_num)
 
-        # Añadir asignatura a las filas individuales de este módulo
+        # Añadir asignatura a las filas individuales de este módulo.
+        # Si el alumno no valoró formador explícitamente, usar el/los del módulo.
+        _mod_formadores = " / ".join(sorted(mod_formador_scores.keys()))
         for ir in mod_individual_rows:
             ir["asignatura"] = asignatura
+            if not ir.get("formador"):
+                ir["formador"] = _mod_formadores
         individual_rows.extend(mod_individual_rows)
 
         # Calcular pct_formador como media de las medias individuales (cada formador pesa igual)
