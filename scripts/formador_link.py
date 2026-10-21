@@ -4,7 +4,7 @@ de la columna de texto 'Formador' en los tableros de encuestas.
 
 Uso:
   # Backfill (reanudable: solo toca elementos con 'Formador (rel)' vacío)
-  MONDAY_API_TOKEN=xxx python formador_link.py --max-minutes 340 --per-minute 200
+  MONDAY_TOKEN=xxx python formador_link.py --max-minutes 340 --per-minute 200
 
   # Desde el sync, para elementos nuevos:
   from formador_link import FormadorResolver, BOARDS
