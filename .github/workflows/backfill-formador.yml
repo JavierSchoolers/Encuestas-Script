@@ -1,0 +1,33 @@
+# Copiar a .github/workflows/backfill-formador.yml
+# Rellena 'Formador (rel)' en los tableros de encuestas. Reanudable: cada ejecución
+# continúa donde lo dejó la anterior. Corre de noche para no competir con el sync.
+name: Backfill Formador (rel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_minute:
+        description: "Elementos por minuto (200 ≈ la mitad de la cuota de la API)"
+        default: "200"
+  schedule:
+    - cron: "0 20 * * *"   # 22:00 hora de Madrid (verano). Quitar cuando termine.
+
+concurrency:
+  group: backfill-formador
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Backfill
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+        run: |
+          python scripts/formador_link.py --max-minutes 340 --per-minute "${{ github.event.inputs.per_minute || '200' }}"
