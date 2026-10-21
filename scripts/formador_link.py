@@ -184,9 +184,9 @@ def main():
     ap.add_argument("--boards", default=",".join(str(b) for b in BOARDS))
     args = ap.parse_args()
 
-    token = os.environ.get("MONDAY_API_TOKEN")
+    token = os.environ.get("MONDAY_TOKEN")
     if not token:
-        sys.exit("Falta MONDAY_API_TOKEN")
+        sys.exit("Falta MONDAY_TOKEN")
     gql = make_gql(token)
     resolver = FormadorResolver(gql)
     deadline = time.time() + args.max_minutes * 60
