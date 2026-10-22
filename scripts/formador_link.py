@@ -19,7 +19,9 @@ import os
 import re
 import sys
 import time
+import threading
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -50,17 +52,22 @@ def norm(s):
 
 
 def make_gql(token):
-    session = requests.Session()
-    session.headers.update({"Authorization": token, "API-Version": "2025-04",
-                            "Content-Type": "application/json"})
+    local = threading.local()  # una sesión HTTP por hilo
+
+    def session():
+        if not hasattr(local, "s"):
+            local.s = requests.Session()
+            local.s.headers.update({"Authorization": token, "API-Version": "2025-04",
+                                    "Content-Type": "application/json"})
+        return local.s
 
     def gql(query, variables=None, tries=8):
         for _ in range(tries):
-            r = session.post(API_URL, json={"query": query, "variables": variables or {}}, timeout=90)
             try:
+                r = session().post(API_URL, json={"query": query, "variables": variables or {}}, timeout=120)
                 body = r.json()
-            except ValueError:
-                time.sleep(10)
+            except (requests.RequestException, ValueError):
+                time.sleep(15)
                 continue
             errs = body.get("errors") or body.get("error_message")
             if errs:
@@ -138,6 +145,20 @@ class FormadorResolver:
         return out
 
 
+WORKERS = 4
+POOL = ThreadPoolExecutor(WORKERS)
+
+
+def send_batch(gql, board_id, rel_col, batch):
+    parts = []
+    for n, (iid, ids) in enumerate(batch):
+        val = json.dumps(json.dumps({rel_col: {"item_ids": ids}}))
+        parts.append("m%d: change_multiple_column_values(board_id:%s,item_id:%s,column_values:%s){id}"
+                     % (n, board_id, iid, val))
+    gql("mutation{" + " ".join(parts) + "}")
+    return len(batch)
+
+
 def backfill(gql, resolver, board_id, cfg, deadline, per_minute, batch_size):
     fields = 'cursor items{id column_values(ids:["%s"]){text}}' % cfg["text"]
     first = ('query($b:ID!,$g:CompareValue!){boards(ids:[$b]){items_page(limit:500,query_params:{rules:['
@@ -156,19 +177,17 @@ def backfill(gql, resolver, board_id, cfg, deadline, per_minute, batch_size):
                 work.append((it["id"], ids))
             else:
                 skipped += 1
+        # Cada lote de 20 tarda 10-20 s en responder, así que se envían varios a la vez
+        # (WORKERS) y se espacia el inicio de cada lote para no pasar de --per-minute.
+        futures = []
         for i in range(0, len(work), batch_size):
             if time.time() > deadline:
-                return updated, skipped, False
-            t0 = time.time()
-            batch = work[i:i + batch_size]
-            parts = []
-            for n, (iid, ids) in enumerate(batch):
-                val = json.dumps(json.dumps({cfg["rel"]: {"item_ids": ids}}))
-                parts.append("m%d: change_multiple_column_values(board_id:%s,item_id:%s,column_values:%s){id}"
-                             % (n, board_id, iid, val))
-            gql("mutation{" + " ".join(parts) + "}")
-            updated += len(batch)
-            time.sleep(max(0.0, interval - (time.time() - t0)))
+                break
+            futures.append(POOL.submit(send_batch, gql, board_id, cfg["rel"], work[i:i + batch_size]))
+            time.sleep(interval)
+        updated += sum(f.result() for f in futures)
+        if time.time() > deadline:
+            return updated, skipped, False
         print(f"  [{cfg['name']}] actualizados={updated} sin_match={skipped}", flush=True)
         if not page["cursor"] or time.time() > deadline:
             return updated, skipped, not page["cursor"]
