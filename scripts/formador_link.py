@@ -6,6 +6,12 @@ Uso:
   # Backfill (reanudable: solo toca elementos con 'Formador (rel)' vacío)
   MONDAY_TOKEN=xxx python formador_link.py --max-minutes 340 --per-minute 200
 
+  # Vaciar 'Formador (rel)' en las filas de alumnos ("Por Encuesta") de un tablero.
+  # 2026-10-29: el backfill llenó ~31.700 filas del tablero Cursos y agotó su límite de
+  # elementos conectados de monday; desde el 22-oct el sync no puede enlazar encuestas
+  # con su matrícula. Nada usa esta columna en esas filas.
+  MONDAY_TOKEN=xxx python formador_link.py --clear --boards 5094417029 --max-minutes 340
+
   # Desde el sync, para elementos nuevos:
   from formador_link import FormadorResolver, BOARDS
   resolver = FormadorResolver(gql)          # gql = tu función de llamada a la API
@@ -150,6 +156,7 @@ POOL = ThreadPoolExecutor(WORKERS)
 
 
 def send_batch(gql, board_id, rel_col, batch):
+    """batch: [(item_id, [ids])]. Con [] vacía la relación."""
     parts = []
     for n, (iid, ids) in enumerate(batch):
         val = json.dumps(json.dumps({rel_col: {"item_ids": ids}}))
@@ -194,6 +201,34 @@ def backfill(gql, resolver, board_id, cfg, deadline, per_minute, batch_size):
         page = gql(nxt, {"c": page["cursor"]})["next_items_page"]
 
 
+def clear(gql, board_id, cfg, deadline, per_minute, batch_size):
+    """Vacía la relación en los grupos de cfg (solo filas que la tienen). Reanudable:
+    cada ejecución vuelve a buscar las que aún tienen algo enlazado."""
+    fields = "cursor items{id}"
+    first = ('query($b:ID!,$g:CompareValue!){boards(ids:[$b]){items_page(limit:500,query_params:{rules:['
+             '{column_id:"group",compare_value:$g,operator:any_of},'
+             '{column_id:"%s",compare_value:"",operator:is_not_empty}]}){%s}}}') % (cfg["rel"], fields)
+    nxt = 'query($c:String!){next_items_page(limit:500,cursor:$c){%s}}' % fields
+    page = gql(first, {"b": str(board_id), "g": cfg["groups"]})["boards"][0]["items_page"]
+    cleared = 0
+    interval = 60.0 * batch_size / per_minute
+    while True:
+        work = [(it["id"], []) for it in page["items"]]
+        futures = []
+        for i in range(0, len(work), batch_size):
+            if time.time() > deadline:
+                break
+            futures.append(POOL.submit(send_batch, gql, board_id, cfg["rel"], work[i:i + batch_size]))
+            time.sleep(interval)
+        cleared += sum(f.result() for f in futures)
+        print(f"  [{cfg['name']}] vaciados={cleared}", flush=True)
+        if time.time() > deadline:
+            return cleared, False
+        if not page["cursor"]:
+            return cleared, True
+        page = gql(nxt, {"c": page["cursor"]})["next_items_page"]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-minutes", type=float, default=340)
@@ -201,14 +236,28 @@ def main():
                     help="Elementos por minuto (cada uno cuesta 30.000 de complejidad; 200/min ≈ 6M/min)")
     ap.add_argument("--batch-size", type=int, default=20)
     ap.add_argument("--boards", default=",".join(str(b) for b in BOARDS))
+    ap.add_argument("--clear", action="store_true",
+                    help="Vaciar 'Formador (rel)' en vez de rellenarla (exige --boards explícito)")
     args = ap.parse_args()
+    if args.clear and "--boards" not in " ".join(sys.argv):
+        sys.exit("Con --clear hay que indicar --boards (p. ej. --boards 5094417029)")
 
     token = os.environ.get("MONDAY_TOKEN")
     if not token:
         sys.exit("Falta MONDAY_TOKEN")
     gql = make_gql(token)
-    resolver = FormadorResolver(gql)
     deadline = time.time() + args.max_minutes * 60
+    if args.clear:
+        all_done = True
+        for b in [int(x) for x in args.boards.split(",") if x]:
+            cfg = BOARDS[b]
+            print(f"Vaciando Formador (rel) · {cfg['name']} ({b}) · grupos {cfg['groups']}", flush=True)
+            n, done = clear(gql, b, cfg, deadline, args.per_minute, args.batch_size)
+            print(f"  -> vaciados={n} {'COMPLETO' if done else 'PENDIENTE'}", flush=True)
+            all_done &= done
+        print("TODO COMPLETO" if all_done else "Quedan elementos: vuelve a lanzar el workflow")
+        return
+    resolver = FormadorResolver(gql)
     all_done = True
     for b in [int(x) for x in args.boards.split(",") if x]:
         cfg = BOARDS[b]

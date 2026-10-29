@@ -4,8 +4,10 @@ link_encuestas_alumnos.py
 Escribe la "Empresa - dashboard" y vincula "Alumno (rel)" en los boards de
 Encuestas, buscando el alumno en el board Alumnos por DNI.
 
-Para Encuestas: Cursos rellena también la columna board_relation "Alumno (rel)"
-(board_relation_mm2fezr6) además del texto de empresa.
+Para Encuestas: Subvenciones rellena también la columna board_relation
+board_relation_mm2fezr6 además del texto de empresa. El board Cursos NO tiene esa
+columna (2026-10-29: la consulta fallaba cada noche con "Column not found" y no se
+escribía nada): en Cursos solo se rellena el texto "Empresa - dashboard".
 
 Uso:
   python3 link_encuestas_alumnos.py              # Ejecutar ambos boards
@@ -52,7 +54,14 @@ ALUMNOS_EMPRESA_COL  = "text_mm0xmv5p"              # "Empresa actualizada" (tex
 # Column IDs — Encuestas: Cursos
 CURSOS_DNI_COL       = "text_mm2fhjgw"
 CURSOS_EMPRESA_COL   = "text_mm2fc06a"             # "Empresa - dashboard" (texto)
-CURSOS_RELATION_COL  = "board_relation_mm2fezr6"   # "Alumno (rel)" → board Alumnos
+CURSOS_RELATION_COL  = "board_relation_mm2fezr6"   # "Alumno (rel)" → board Alumnos (solo existe en Subvenciones)
+CURSOS_MATRICULA_COL = "board_relation_mm5p6dmp"   # "Matrículas FUNDAE y Particulares" (paso 3c)
+
+
+def relation_col(board_id):
+    """Columna de relación a escribir en el board, o None si no tiene. El board Cursos
+    no tiene board_relation_mm2fezr6: pedirla rompía la consulta ("Column not found")."""
+    return None if int(board_id) == ENCUESTAS_CURSOS else CURSOS_RELATION_COL
 
 # Column IDs — Encuestas: EGH
 EGH_DNI_COL          = "text_mm2fq73j"
@@ -416,18 +425,26 @@ def _process_cursos_fast(args, board_id=ENCUESTAS_CURSOS, board_label="Cursos"):
     print(f"\n{'─' * 70}")
     print(f"📋 Encuestas: {board_label} ({board_id}) · solo ítems sin enlazar")
 
-    # 1) Solo ítems con "Alumno (rel)" vacío (filtro server-side).
-    rules = [{"column_id": CURSOS_RELATION_COL, "compare_value": [], "operator": "is_empty"}]
+    # 1) Solo ítems pendientes (filtro server-side): con la relación vacía o, en
+    #    Cursos (sin columna de relación), con la empresa vacía.
+    rel_col = relation_col(board_id)
+    pend_col = rel_col or CURSOS_EMPRESA_COL
+    rules = [{"column_id": pend_col, "compare_value": [], "operator": "is_empty"}]
     enc_items = fetch_all_items(board_id,
-                                [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL],
+                                [CURSOS_DNI_COL, CURSOS_EMPRESA_COL] + ([rel_col] if rel_col else [CURSOS_MATRICULA_COL]),
                                 rules=rules)
     pend, no_dni, ya_rel = [], 0, 0
     for it in enc_items:
         # v60eu · GUARDA CLIENTE: si el filtro server-side is_empty NO filtró
         # (bajo API 2024-10 devolvía el board ENTERO → re-escribía los ~35k cada
         # noche → >5h → GitHub Actions lo cancelaba), NO reescribimos los ítems que
-        # YA tienen 'Alumno (rel)'. Solo procesamos los realmente vacíos.
-        if is_relation_set(it, CURSOS_RELATION_COL):
+        # YA están hechos. Solo procesamos los realmente pendientes.
+        # En Cursos solo hacen falta las que NO tienen matrícula enlazada: las enlazadas
+        # ya traen la cuenta de su matrícula (mirror «Cuenta») y no se pisa con la empresa
+        # actual del alumno.
+        hecho = (is_relation_set(it, rel_col) if rel_col
+                 else bool(get_column_value(it, CURSOS_EMPRESA_COL)) or is_relation_set(it, CURSOS_MATRICULA_COL))
+        if hecho:
             ya_rel += 1
             continue
         dni = normalize_dni(get_column_value(it, CURSOS_DNI_COL))
@@ -464,11 +481,12 @@ def _process_cursos_fast(args, board_id=ENCUESTAS_CURSOS, board_label="Cursos"):
         if not aid:
             not_found += 1
             continue
-        cv = {CURSOS_RELATION_COL: {"item_ids": [int(aid)]}}
+        cv = {rel_col: {"item_ids": [int(aid)]}} if rel_col else {}
         emp = dni_to_empresa.get(dni)
         if emp and not get_column_value(it, CURSOS_EMPRESA_COL):
             cv[CURSOS_EMPRESA_COL] = emp
-        updates.append((it["id"], cv))
+        if cv:
+            updates.append((it["id"], cv))
     print(f"   A escribir: {len(updates)} · DNI sin alumno en Alumnos: {not_found}")
 
     if args.dry_run:
@@ -483,7 +501,7 @@ def _process_cursos_fast(args, board_id=ENCUESTAS_CURSOS, board_label="Cursos"):
     # agotar el límite de GitHub Actions con un backlog grande.
     _budget = int(os.environ.get("LINK_MAX_SECONDS", "10800"))
     written = set_columns_batch(board_id, updates, max_seconds=_budget)
-    print(f"   ✅ Escritos {written}/{len(updates)} ítems (Alumno rel + Empresa)")
+    print(f"   ✅ Escritos {written}/{len(updates)} ítems ({'Alumno rel + ' if rel_col else ''}Empresa)")
 
 
 def _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
@@ -493,9 +511,10 @@ def _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
     el board_id."""
     print(f"\n{'─' * 70}")
     print(f"📋 Encuestas: {board_label} ({board_id})")
-    print(f"   Columnas: Alumno (rel) [{CURSOS_RELATION_COL}] + Empresa [{CURSOS_EMPRESA_COL}]")
+    rel_col = relation_col(board_id)
+    print(f"   Columnas: {'Alumno (rel) [' + rel_col + '] + ' if rel_col else ''}Empresa [{CURSOS_EMPRESA_COL}]")
 
-    cols = [CURSOS_DNI_COL, CURSOS_EMPRESA_COL, CURSOS_RELATION_COL]
+    cols = [CURSOS_DNI_COL, CURSOS_EMPRESA_COL] + ([rel_col] if rel_col else [])
     enc_items = fetch_all_items(board_id, cols)
     print(f"   Total items: {len(enc_items)}")
 
@@ -522,10 +541,10 @@ def _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
             continue
 
         # ¿Qué hay que actualizar?
-        rel_set     = is_relation_set(item, CURSOS_RELATION_COL)
+        rel_set     = is_relation_set(item, rel_col) if rel_col else True
         empresa_set = bool(get_column_value(item, CURSOS_EMPRESA_COL))
 
-        need_rel = not rel_set or args.force
+        need_rel = bool(rel_col) and (not rel_set or args.force)
         need_emp = (not empresa_set or args.force) and bool(empresa)
 
         if not need_rel:
@@ -539,7 +558,7 @@ def _process_cursos(args, dni_to_alumno_id, dni_to_empresa,
         # Construir el dict de columnas a actualizar
         col_values = {}
         if need_rel:
-            col_values[CURSOS_RELATION_COL] = {"item_ids": [int(alumno_id)]}
+            col_values[rel_col] = {"item_ids": [int(alumno_id)]}
             matched_rel += 1
         if need_emp:
             col_values[CURSOS_EMPRESA_COL] = empresa

@@ -1,0 +1,36 @@
+# Vacía 'Formador (rel)' en las filas de alumnos ("Por Encuesta") del tablero Cursos.
+# 2026-10-29: el backfill de esa columna agotó el límite de elementos conectados del
+# tablero y desde el 22-oct el paso 3c del sync no puede enlazar encuestas con su
+# matrícula ("Board has reached its connected items limit"). Reanudable: si no termina,
+# se vuelve a lanzar y sigue con las que quedan. Solo manual.
+name: Vaciar Formador (rel) en encuestas
+
+on:
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: "Tablero(s) a vaciar (ids separados por comas)"
+        default: "5094417029"
+      per_minute:
+        description: "Elementos por minuto (200 ≈ la mitad de la cuota de la API)"
+        default: "200"
+
+concurrency:
+  group: backfill-formador
+  cancel-in-progress: false
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Vaciar
+        env:
+          MONDAY_TOKEN: ${{ secrets.MONDAY_TOKEN }}
+        run: |
+          python scripts/formador_link.py --clear --boards "${{ github.event.inputs.boards }}" --max-minutes 340 --per-minute "${{ github.event.inputs.per_minute }}"
