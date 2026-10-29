@@ -12,8 +12,8 @@ on:
         description: "Tablero(s) a vaciar (ids separados por comas)"
         default: "5094417029"
       per_minute:
-        description: "Elementos por minuto (200 ≈ la mitad de la cuota de la API)"
-        default: "200"
+        description: "Elementos por minuto (120: con 200 Monday cortó por FIELD_LIMIT_EXCEEDED)"
+        default: "120"
 
 concurrency:
   group: backfill-formador

@@ -78,7 +78,9 @@ def make_gql(token):
             errs = body.get("errors") or body.get("error_message")
             if errs:
                 msg = json.dumps(errs)
-                if r.status_code == 429 or "omplexity" in msg or "RATE_LIMIT" in msg or "Rate Limit" in msg:
+                # FIELD_LIMIT_EXCEEDED llega con HTTP 200 y el 429 solo dentro del error: también se reintenta
+                if (r.status_code == 429 or "omplexity" in msg or "RATE_LIMIT" in msg or "Rate Limit" in msg
+                        or "FIELD_LIMIT_EXCEEDED" in msg or '"status_code": 429' in msg):
                     m = re.search(r'"retry_in_seconds":\s*(\d+)', msg) or re.search(r"(\d+)\s*seconds", msg)
                     time.sleep(int(m.group(1)) + 2 if m else 30)
                     continue
