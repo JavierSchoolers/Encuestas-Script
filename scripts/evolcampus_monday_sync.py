@@ -152,19 +152,34 @@ def get_surveys_by_group(group_id, use_activities=False):
         gid = int(group_id)
     except (TypeError, ValueError):
         gid = group_id
-    headers = {"Authorization": f"Bearer {evol_token()}"}
     payload = {"groupid": gid}
     if use_activities:
         payload["activities"] = True
-    resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
-                         headers=headers, json=payload, timeout=30)
-    if resp.status_code == 400:
-        # La API devuelve 400 cuando el grupo aún no tiene encuestas (curso futuro o sin actividad)
-        return None
-    if not resp.ok:
-        print(f"    Detalle error API: {resp.text[:300]}")
-    resp.raise_for_status()
-    return resp.json()
+    # Los grupos grandes (p.ej. EGH con 100+ actividades) devuelven varios MB y
+    # tardan bastante: timeout generoso + reintentos para que un timeout o un
+    # 502/503 puntual no haga que el grupo se caiga silenciosamente del sync.
+    last_exc = None
+    for attempt in range(4):
+        try:
+            headers = {"Authorization": f"Bearer {evol_token()}"}
+            resp = requests.post(f"{EVOLCAMPUS_API}/getSurveysByGroup",
+                                 headers=headers, json=payload, timeout=120)
+            if resp.status_code == 400:
+                # La API devuelve 400 cuando el grupo aún no tiene encuestas (curso futuro o sin actividad)
+                return None
+            if not resp.ok:
+                print(f"    Detalle error API: {resp.text[:300]}")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            if attempt < 3:
+                wait = 5 * (attempt + 1)
+                print(f"    ↻ getSurveysByGroup grupo {gid}: intento {attempt+1}/4 falló "
+                      f"({type(e).__name__}); reintento en {wait}s")
+                time.sleep(wait)
+    # Agotados los reintentos: propagar para que el grupo entre en failed_groups
+    raise last_exc
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1223,9 +1238,10 @@ def mode_sync(dry_run=False, filter_course=None, force=False):
                                        col_ids, enc_row, dry_run, items_cache)
 
         except Exception as e:
+            # Cualquier fallo (timeout, conexión, 502/503...) → reintento final,
+            # para que ningún grupo se caiga silenciosamente del sync.
             print(f"    ✗ Error en grupo {group_name}: {e}")
-            if "503" in str(e) or "502" in str(e) or "Service Unavailable" in str(e):
-                failed_groups.append(g)
+            failed_groups.append(g)
             continue
 
     # ── Reintentar grupos que fallaron por 503/502 ────────────────────────────
