@@ -267,6 +267,27 @@ def extract_formador_name(question_html):
     return m.group(1).strip() if m else None
 
 
+def survey_tema_label(survey):
+    """Etiqueta de 'tema' para desambiguar encuestas que comparten el mismo
+    módulo (subject). Un módulo con varios temas tiene varias encuestas idénticas
+    en name/subject que solo se distinguen por el formador de cada tema; usamos
+    ese formador. Si la encuesta no tiene formador, caemos al nombre de la encuesta.
+    """
+    forms = []
+    for rec in survey.get("records", []):
+        for q in rec.get("questions", []):
+            if categorize_question(q.get("question", "")) == "formador":
+                fn = extract_formador_name(q.get("question", ""))
+                if fn and fn not in forms:
+                    forms.append(fn)
+        if forms:
+            break
+    if forms:
+        return " / ".join(sorted(forms))
+    name = (survey.get("name") or "").strip()
+    return re.sub(r':\s*encuest[as]+\s*$', '', name, flags=re.IGNORECASE).strip()
+
+
 def to_pct(scores):
     """Promedia una lista de puntuaciones ya normalizadas a porcentaje 0-100."""
     if not scores:
@@ -343,6 +364,28 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
     course_name = grp.get("course") or course_name
     group_name  = grp.get("name") or group_name
 
+    # Pre-conteo: ¿cuántas encuestas (que realmente se procesan) caen en cada
+    # módulo? Si un módulo tiene más de una, hay varios temas bajo el mismo
+    # "subject" y habrá que desambiguar por tema (formador) para que se carguen
+    # todas. Se replica la misma lógica de inclusión del bucle principal.
+    def _survey_included(_s):
+        if (_s.get("type", "") or "").lower() == "fundae":
+            return False
+        _sn = (_s.get("name") or "").strip().lower()
+        if any(kw in _sn for kw in EXCLUDED_SURVEY_NAMES):
+            _hay = f"{course_name or ''} {group_name or ''}".lower()
+            if not any(_ck in _hay and _sk in _sn for _ck, _sk in SURVEY_EXCL_BYPASS):
+                return False
+        return True
+    def _module_key(_s):
+        _mn = (_s.get("subject") or _s.get("name") or "Sin nombre")
+        return re.sub(r':\s*encuest[as]+\s*$', '', _mn, flags=re.IGNORECASE).strip()
+    module_counts = {}
+    for _s in surveys:
+        if _survey_included(_s):
+            _mk = _module_key(_s)
+            module_counts[_mk] = module_counts.get(_mk, 0) + 1
+
     program_scores_global    = []
     program_scores_formador  = []
     program_scores_contenido = []
@@ -379,6 +422,14 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         # Nombre del módulo: campo "subject" (asignatura) de la API
         module_name = (survey.get("subject") or survey.get("name") or "Sin nombre")
         module_name = re.sub(r':\s*encuest[as]+\s*$', '', module_name, flags=re.IGNORECASE).strip()
+
+        # Si el módulo tiene más de una encuesta (varios temas/formadores bajo el
+        # mismo subject), añadir el tema (formador) al nombre para que no colisionen
+        # en Monday y se carguen todas (antes solo entraba la última).
+        if module_counts.get(module_name, 0) > 1:
+            tema = survey_tema_label(survey)
+            if tema:
+                module_name = f"{module_name} — {tema}"
 
         records = survey.get("records", [])
 
