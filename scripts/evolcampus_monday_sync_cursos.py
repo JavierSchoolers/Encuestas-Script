@@ -426,9 +426,13 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
         # Si el módulo tiene más de una encuesta (varios temas/formadores bajo el
         # mismo subject), añadir el tema (formador) al nombre para que no colisionen
         # en Monday y se carguen todas (antes solo entraba la última).
+        # Guardamos el nombre base (plano) para poder borrar en Monday el ítem
+        # plano obsoleto que generaba el código viejo (evita duplicados).
+        base_modulo = None
         if module_counts.get(module_name, 0) > 1:
             tema = survey_tema_label(survey)
             if tema:
+                base_modulo = module_name
                 module_name = f"{module_name} — {tema}"
 
         records = survey.get("records", [])
@@ -559,6 +563,7 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
                     "curso":          course_name,
                     "grupo":          group_name,
                     "modulo":         module_name,
+                    "_base_modulo":   base_modulo,
                     "alumno":         student,
                     "dni":            student_dni,
                     "formador":       " / ".join(rec_formadores_ord),
@@ -611,6 +616,7 @@ def process_group_data(raw_data, group_name, course_name, allowed_dnis=None):
             "curso":          course_name,
             "grupo":          group_name,
             "modulo":         module_name,
+            "_base_modulo":   base_modulo,
             "formador":       " / ".join(formadores_ordenados),
             "pct_global":     to_pct(mod_scores_global),
             "respuestas":     mod_n_responses,
@@ -1126,6 +1132,60 @@ def mode_explore(filter_course=None):
     print(f"\n  ✓ Guardado {len(dump)} grupo(s) en {out_name}")
 
 
+def monday_delete_item(item_id):
+    """Borra un ítem del board (va a la papelera de Monday, recuperable)."""
+    q = """mutation($id: ID!){ delete_item(item_id: $id){ id } }"""
+    for attempt in range(4):
+        try:
+            monday_query(q, {"id": str(item_id)}, timeout=60)
+            return True
+        except Exception:
+            time.sleep(3 * (attempt + 1))
+    return False
+
+
+def purge_superseded_plain_items(board_id, group_modulo_id, group_encuesta_id,
+                                 course_clean, group_name, module_rows,
+                                 individual_rows, items_cache, dry_run=False):
+    """Borra de Monday los ítems 'planos' de módulos que ahora están desglosados
+    por tema (formador). El código viejo creaba un único ítem por módulo (la última
+    encuesta); al pasar al desglose, ese ítem plano queda obsoleto y duplicado.
+    Solo borra cuando el módulo realmente se desglosó (hay _base_modulo) y solo el
+    nombre exacto 'curso — grupo — móduloBase' (y sus individuales), nunca los
+    desglosados. Si un grupo viene sin desglose, no borra nada."""
+    if items_cache is None:
+        return 0
+    bases = {r.get("_base_modulo") for r in module_rows if r.get("_base_modulo")}
+    if not bases:
+        return 0
+    to_delete = {}  # name -> id (dedup)
+    for base in bases:
+        plain = f"{course_clean} — {group_name} — {base}"
+        if plain in items_cache:
+            to_delete[plain] = items_cache[plain]
+    for enc_row in individual_rows:
+        base = enc_row.get("_base_modulo")
+        if not base:
+            continue
+        alumno = enc_row.get("alumno") or "Anónimo"
+        plain = f"{course_clean} — {group_name} — {base} — {alumno}"
+        if plain in items_cache:
+            to_delete[plain] = items_cache[plain]
+    if not to_delete:
+        return 0
+    if dry_run:
+        print(f"    🧹 (simulado) {len(to_delete)} ítem(s) plano(s) obsoleto(s) a borrar")
+        return len(to_delete)
+    deleted = 0
+    for name, iid in to_delete.items():
+        if monday_delete_item(iid):
+            items_cache.pop(name, None)
+            deleted += 1
+    if deleted:
+        print(f"    🧹 {deleted} ítem(s) plano(s) obsoleto(s) borrado(s) (módulos desglosados por tema)")
+    return deleted
+
+
 def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenciones=False):
     """Sincroniza cursos con Monday.
     Si year está definido, sincroniza todos los grupos de ese año (activos o no).
@@ -1270,6 +1330,11 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
                     monday_upsert_item(board_id, group_encuesta_id, item_name_enc,
                                        col_ids, enc_row, dry_run, items_cache)
 
+            # Borrar ítems planos obsoletos de módulos ahora desglosados por tema
+            purge_superseded_plain_items(board_id, group_modulo_id, group_encuesta_id,
+                                         course_clean, group_name, module_rows,
+                                         individual_rows, items_cache, dry_run)
+
             synced += 1
 
         except Exception as e:
@@ -1311,6 +1376,9 @@ def mode_sync(dry_run=False, year=None, filter_course=None, force=False, subvenc
                     for item_name_enc, enc_row in seen_enc.items():
                         monday_upsert_item(board_id, group_encuesta_id, item_name_enc,
                                            col_ids, enc_row, dry_run, items_cache)
+                purge_superseded_plain_items(board_id, group_modulo_id, group_encuesta_id,
+                                             course_clean, group_name, module_rows,
+                                             individual_rows, items_cache, dry_run)
                 synced += 1
                 retried += 1
             except Exception as e2:
