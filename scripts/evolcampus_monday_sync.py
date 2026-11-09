@@ -244,24 +244,22 @@ def build_subjects_map(courses_data, course_name):
 
 
 def extract_formador_name(question_html):
-    """Extrae el nombre del formador del texto de la pregunta HTML.
+    """Extrae el nombre del formador del texto de la pregunta.
 
-    Maneja dos formatos:
-      Caso A: <strong>formadora Laura Garrido?</strong>
-              (formador/a y nombre dentro del mismo tag)
-      Caso B: nuestro formador <strong>Rubén Marín?</strong>
-              (formador/a fuera del tag, nombre dentro del siguiente tag)
+    El nombre puede venir de varias formas en el HTML:
+      - "formadora Laura Garrido?"                         (nombre pegado a formador)
+      - "nuestro formador <strong>Rubén Marín?</strong>"   (nombre en el siguiente tag)
+      - "<strong>formador</strong> <strong>David</strong> <strong>Rotenhan?</strong>"
+        (formador y cada palabra del nombre en tags separados)
+
+    Para cubrir todos los casos quitamos primero el HTML (dejando un espacio por
+    tag) y normalizamos los espacios (incl. &nbsp;/\\xa0), de modo que da igual
+    cómo esté troceado el nombre entre etiquetas.
     """
-    # Caso A: "formador[a] NombreApellido" en el mismo nodo de texto
-    match = re.search(r'formador[a]?\s+([^<?\n]{3,40})', question_html, re.IGNORECASE)
+    text = strip_html(question_html).replace('\xa0', ' ').replace('&nbsp;', ' ')
+    match = re.search(r'formador[a]?\s+([^?\n]{3,40})', text, re.IGNORECASE)
     if match:
-        name = match.group(1).strip().rstrip('?').strip()
-        if len(name) >= 3:
-            return name
-    # Caso B: "formador[a] <tag>NombreApellido</tag>"
-    match = re.search(r'formador[a]?\s*<[^>]+>\s*([^<?\n]{3,40})', question_html, re.IGNORECASE)
-    if match:
-        name = match.group(1).strip().rstrip('?').strip()
+        name = " ".join(match.group(1).strip().rstrip('?').strip().split())
         if len(name) >= 3:
             return name
     return None

@@ -262,9 +262,12 @@ def natural_key(s):
 
 
 def extract_formador_name(question_html):
-    text = strip_html(question_html)
+    text = strip_html(question_html).replace('\xa0', ' ').replace('&nbsp;', ' ')
     m = re.search(r'(?:formador[a]?|ponente|docente|profesor[a]?)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)', text)
-    return m.group(1).strip() if m else None
+    # Normaliza espacios internos: el HTML a veces mete &nbsp;/espacios dobles
+    # dentro del nombre (p.ej. 'David   Rotenhan'), que partiría al formador en
+    # dos variantes distintas en la vista por formador.
+    return " ".join(m.group(1).split()) if m else None
 
 
 def survey_tema_label(survey):
