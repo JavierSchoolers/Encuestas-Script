@@ -104,21 +104,51 @@ def evol_token():
     return _evol_token
 
 
-def evol_get(endpoint):
-    """GET autenticado a la API de EvolCampus."""
-    headers = {"Authorization": f"Bearer {evol_token()}"}
-    resp = requests.get(f"{EVOLCAMPUS_API}/{endpoint}", headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+# Códigos HTTP que EvolCampus devuelve de forma intermitente y conviene reintentar.
+# Incluimos 400: getCoursesGroups es una petición fija (sin parámetros) que a veces
+# devuelve un 400 transitorio que desaparece al reintentar unos segundos después.
+EVOL_RETRY_CODES = (400, 429, 500, 502, 503, 504)
 
 
-def evol_post(endpoint, payload):
-    """POST autenticado a la API de EvolCampus."""
+def evol_get(endpoint, retries=4):
+    """GET autenticado a la API de EvolCampus, con reintentos para errores transitorios."""
     headers = {"Authorization": f"Bearer {evol_token()}"}
-    resp = requests.post(f"{EVOLCAMPUS_API}/{endpoint}", headers=headers,
-                         json=payload, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(retries):
+        try:
+            resp = requests.get(f"{EVOLCAMPUS_API}/{endpoint}", headers=headers, timeout=30)
+        except requests.exceptions.RequestException as e:
+            if attempt < retries - 1:
+                wait = (attempt + 1) * 8
+                print(f"  ⚠️  {endpoint} error de red ({e}), reintento en {wait}s ({attempt+1}/{retries})")
+                time.sleep(wait); continue
+            raise
+        if resp.status_code in EVOL_RETRY_CODES and attempt < retries - 1:
+            wait = (attempt + 1) * 8
+            print(f"  ⚠️  {endpoint} HTTP {resp.status_code}, reintento en {wait}s ({attempt+1}/{retries})")
+            time.sleep(wait); continue
+        resp.raise_for_status()
+        return resp.json()
+
+
+def evol_post(endpoint, payload, retries=4):
+    """POST autenticado a la API de EvolCampus, con reintentos para errores transitorios."""
+    headers = {"Authorization": f"Bearer {evol_token()}"}
+    for attempt in range(retries):
+        try:
+            resp = requests.post(f"{EVOLCAMPUS_API}/{endpoint}", headers=headers,
+                                 json=payload, timeout=30)
+        except requests.exceptions.RequestException as e:
+            if attempt < retries - 1:
+                wait = (attempt + 1) * 8
+                print(f"  ⚠️  {endpoint} error de red ({e}), reintento en {wait}s ({attempt+1}/{retries})")
+                time.sleep(wait); continue
+            raise
+        if resp.status_code in EVOL_RETRY_CODES and attempt < retries - 1:
+            wait = (attempt + 1) * 8
+            print(f"  ⚠️  {endpoint} HTTP {resp.status_code}, reintento en {wait}s ({attempt+1}/{retries})")
+            time.sleep(wait); continue
+        resp.raise_for_status()
+        return resp.json()
 
 
 def get_all_groups():
